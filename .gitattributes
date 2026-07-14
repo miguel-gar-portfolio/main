@@ -1,0 +1,9 @@
+# Normalize line endings
+* text=auto eol=lf
+
+# Strip Jupyter notebook outputs/metadata before they hit git history.
+# Requires `nbstripout --install` (or the pre-commit hook) to be active locally.
+*.ipynb filter=nbstripout diff=ipynb
+
+# Treat notebooks as text for diffing purposes once stripped.
+*.ipynb text

@@ -1,0 +1,19 @@
+\section{Methodology}
+\label{sec:methodology}
+
+TODO: describe the modeling / analysis approach: candidate methods
+considered, the one(s) chosen and why, feature set, and validation strategy
+(e.g.\ k-fold cross-validation, time-based split).
+
+\subsection{Evaluation metrics}
+
+TODO: state the metric(s) used to evaluate performance and why they fit the
+problem (e.g.\ RMSE for a skewed regression target, F1 for an imbalanced
+classification task).
+
+\begin{lstlisting}[language=Python, caption={Example: minimal training snippet}]
+from project_template.modeling import train_model
+
+model = train_model(X_train, y_train)
+score = model.score(X_test, y_test)
+\end{lstlisting}

@@ -1,0 +1,111 @@
+% Shared preamble for the portfolio's LaTeX report template.
+% Keeps every project's report visually consistent (fonts, colors, headers).
+
+% --- Page geometry ---
+\usepackage[a4paper,margin=2.5cm,headheight=14pt]{geometry}
+
+% --- Fonts & typography ---
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{microtype}
+\usepackage[english]{babel}
+
+% --- Color palette ---
+\usepackage{xcolor}
+\definecolor{accent}{HTML}{1F4E79}     % deep blue — headings, links, rules
+\definecolor{accentlight}{HTML}{DCE6F1} % pale blue — table header fills, boxes
+\definecolor{muted}{HTML}{595959}       % gray — captions, footer text
+
+% --- Math ---
+\usepackage{amsmath}
+\usepackage{amssymb}
+
+% --- Figures & tables ---
+\usepackage{graphicx}
+\graphicspath{{figures/}}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{tabularx}
+\usepackage{caption}
+\usepackage{subcaption}
+\captionsetup{font=small,labelfont={bf,color=accent},textfont={color=muted}}
+
+% --- Lists ---
+\usepackage{enumitem}
+\setlist{topsep=4pt,itemsep=2pt}
+
+% --- Code listings ---
+\usepackage{listings}
+\lstset{
+    basicstyle=\ttfamily\small,
+    backgroundcolor=\color{accentlight!40},
+    keywordstyle=\color{accent}\bfseries,
+    commentstyle=\color{muted}\itshape,
+    stringstyle=\color{accent!70!black},
+    numbers=left,
+    numberstyle=\tiny\color{muted},
+    frame=single,
+    rulecolor=\color{accentlight},
+    breaklines=true,
+    showstringspaces=false,
+    tabsize=4,
+}
+
+% --- Section headings ---
+\usepackage{titlesec}
+\titleformat{\section}
+    {\normalfont\Large\bfseries\color{accent}}
+    {\thesection}{0.7em}{}
+    [{\color{accentlight}\titlerule[1.2pt]}]
+\titleformat{\subsection}
+    {\normalfont\large\bfseries\color{accent}}
+    {\thesubsection}{0.7em}{}
+\titleformat{\subsubsection}
+    {\normalfont\normalsize\bfseries\color{accent}}
+    {\thesubsubsection}{0.7em}{}
+
+% --- Headers & footers ---
+\usepackage{fancyhdr}
+\usepackage{lastpage}
+\pagestyle{fancy}
+\fancyhf{}
+\renewcommand{\headrulewidth}{0.4pt}
+\renewcommand{\footrulewidth}{0.4pt}
+\fancyhead[L]{\small\color{muted}\reporttitleshort}
+\fancyhead[R]{\small\color{muted}\leftmark}
+\fancyfoot[L]{\small\color{muted}\reportauthor}
+\fancyfoot[R]{\small\color{muted}Page \thepage\ of \pageref{LastPage}}
+\renewcommand{\sectionmark}[1]{\markboth{#1}{}}
+\renewcommand{\headrule}{{\color{accentlight}\hrule width\headwidth height\headrulewidth}}
+\renewcommand{\footrule}{{\color{accentlight}\hrule width\headwidth height\footrulewidth}}
+
+% --- Table of contents ---
+\usepackage{tocloft}
+\renewcommand{\cftsecfont}{\color{accent}\bfseries}
+\renewcommand{\cftsecpagefont}{\color{accent}}
+
+% --- Citations & bibliography ---
+\usepackage[round,authoryear]{natbib}
+
+% --- Callout boxes (notes / caveats) ---
+\usepackage[most]{tcolorbox}
+\newtcolorbox{notebox}{
+    colback=accentlight!35,
+    colframe=accent,
+    boxrule=0.6pt,
+    arc=2pt,
+    left=6pt,right=6pt,top=4pt,bottom=4pt,
+    breakable,
+}
+
+% --- Hyperlinks (load last) ---
+\usepackage[colorlinks=true,linkcolor=accent,citecolor=accent,urlcolor=accent,pdfusetitle]{hyperref}
+\usepackage{csquotes}
+
+% --- Convenience commands (values set per report in main.tex) ---
+\providecommand{\reporttitle}{Report Title}
+\providecommand{\reporttitleshort}{Report Title}
+\providecommand{\reportsubtitle}{Report subtitle}
+\providecommand{\reportauthor}{Author Name}
+\providecommand{\reportdate}{\today}
+\providecommand{\reportrepolink}{}

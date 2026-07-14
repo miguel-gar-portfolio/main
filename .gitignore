@@ -1,0 +1,75 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+*.egg
+
+# --- Virtual environments ---
+.venv/
+venv/
+env/
+
+# --- uv ---
+# Lockfiles ARE tracked (uv.lock) for reproducibility; only cache is ignored.
+.uv-cache/
+
+# --- Tooling caches ---
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
+.cache/
+
+# --- Jupyter ---
+.ipynb_checkpoints/
+*/.ipynb_checkpoints/*
+
+# --- Environment / secrets ---
+.env
+.env.*
+!.env.example
+
+# --- OS ---
+.DS_Store
+Thumbs.db
+
+# --- Editors / IDE ---
+.vscode/
+.idea/
+
+# --- Data (never commit real datasets) ---
+projects/*/data/raw/*
+projects/*/data/interim/*
+projects/*/data/processed/*
+!projects/*/data/raw/.gitkeep
+!projects/*/data/interim/.gitkeep
+!projects/*/data/processed/.gitkeep
+
+# --- Model / experiment artifacts ---
+*.pkl
+*.joblib
+*.h5
+*.pt
+*.ckpt
+mlruns/
+mlartifacts/
+wandb/
+outputs/
+
+# --- LaTeX build artifacts (see templates/latex-report) ---
+**/latex-report*/build/
+*.aux
+*.bbl
+*.bcf
+*.blg
+*.fdb_latexmk
+*.fls
+*.log
+*.out
+*.run.xml
+*.synctex.gz
+*.toc

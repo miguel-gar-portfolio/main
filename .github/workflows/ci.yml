@@ -1,0 +1,72 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint-repo:
+    name: Lint (pre-commit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: pre-commit/action@v3.0.1
+
+  build-latex-template:
+    name: Build LaTeX report template
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile templates/latex-report/main.tex
+        uses: dante-ev/latex-action@v2
+        with:
+          root_file: main.tex
+          working_directory: templates/latex-report
+          latexmk_use_xelatex: false
+
+  discover-projects:
+    name: Discover projects
+    runs-on: ubuntu-latest
+    outputs:
+      projects: ${{ steps.find.outputs.projects }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: find
+        name: Find real projects (exclude _template)
+        shell: bash
+        run: |
+          projects=$(
+            find projects -mindepth 1 -maxdepth 1 -type d ! -name "_template" \
+              -exec test -e "{}/pyproject.toml" \; -print \
+            | jq -R -s -c 'split("\n") | map(select(length > 0))'
+          )
+          echo "projects=$projects" >> "$GITHUB_OUTPUT"
+
+  test-projects:
+    name: Test ${{ matrix.project }}
+    needs: discover-projects
+    if: needs.discover-projects.outputs.projects != '[]'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        project: ${{ fromJson(needs.discover-projects.outputs.projects) }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
+      - name: Sync dependencies
+        working-directory: ${{ matrix.project }}
+        run: uv sync --dev
+      - name: Lint
+        working-directory: ${{ matrix.project }}
+        run: uv run ruff check .
+      - name: Test
+        working-directory: ${{ matrix.project }}
+        run: uv run pytest

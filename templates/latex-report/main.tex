@@ -1,0 +1,42 @@
+% Professional report template shared across every project in the portfolio.
+% Copy this whole `templates/latex-report/` folder into a project's
+% `reports/` directory (see README.md here for details), then edit the
+% values below and the files under `sections/`.
+\documentclass[11pt,a4paper]{article}
+
+\input{preamble}
+
+% --- Report metadata: edit these for your project ---
+\renewcommand{\reporttitle}{Project Title}
+\renewcommand{\reporttitleshort}{Project Title}
+\renewcommand{\reportsubtitle}{One-sentence description of the problem and outcome}
+\renewcommand{\reportauthor}{Your Name}
+\renewcommand{\reportdate}{\today}
+\renewcommand{\reportrepolink}{https://github.com/your-username/portfolio}
+
+\title{\reporttitle}
+\author{\reportauthor}
+\date{\reportdate}
+
+\begin{document}
+
+\input{sections/00_titlepage}
+
+\input{sections/01_abstract}
+
+\tableofcontents
+\thispagestyle{fancy}
+\newpage
+
+\input{sections/02_introduction}
+\input{sections/03_data}
+\input{sections/04_methodology}
+\input{sections/05_results}
+\input{sections/06_discussion}
+\input{sections/07_conclusion}
+
+\newpage
+\bibliographystyle{plainnat}
+\bibliography{references}
+
+\end{document}

@@ -1,0 +1,27 @@
+# Repository-wide tooling configuration only.
+# This file intentionally declares no dependencies and is not an installable
+# package: every project under `projects/` manages its own pyproject.toml,
+# dependencies, and uv-managed virtual environment.
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = ["projects/_template"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = ["E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = []
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.mypy]
+python_version = "3.11"
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+check_untyped_defs = true
+exclude = ["projects/_template"]
