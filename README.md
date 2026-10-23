@@ -23,9 +23,7 @@ portfolio/
 
 | Project | Description | Tech | Status |
 | --- | --- | --- | --- |
-| _none yet_ | — | — | — |
-
-New projects will be listed here as they're added.
+| [customer-propensity](projects/customer-propensity/) | Customer-propensity classification, plus a proposal for detecting legal company names | pandas, scikit-learn, XGBoost, SHAP | Complete |
 
 ## Tech stack
 

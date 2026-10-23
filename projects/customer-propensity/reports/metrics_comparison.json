@@ -1,0 +1,28 @@
+{
+    "baseline_logistic": {
+        "dataset": "shared",
+        "features": "no_tendencia",
+        "split": "test",
+        "threshold": 0.5,
+        "f1": 0.18035316303788787,
+        "precision": 0.10432368107893693,
+        "recall": 0.6649810366624526,
+        "accuracy": 0.6812241632217629,
+        "roc_auc": 0.7347809438857665,
+        "pr_auc": 0.1315928626409587,
+        "eval_metric": 1001580.0
+    },
+    "xgboost": {
+        "dataset": "shared",
+        "features": "full_features",
+        "split": "test",
+        "threshold": 0.0436648391187191,
+        "f1": 0.33484619263741805,
+        "precision": 0.20913385826771655,
+        "recall": 0.8394437420986094,
+        "accuracy": 0.824109881317509,
+        "roc_auc": 0.9305518539898202,
+        "pr_auc": 0.6786099211286083,
+        "eval_metric": 1296250.0
+    }
+}
