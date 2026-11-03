@@ -1,0 +1,605 @@
+---
+title: "Time series analysis"
+author: "Miguel García Moreno"
+date: today
+
+format:
+  pdf:
+    toc: true
+    latex_engine: xelatex
+    output-file: time_series_analysis.pdf
+  typst:
+    toc: true
+    output-file: time_series_analysis.pdf
+editor: source
+---
+\pagebreak
+
+::: callout-note
+## Exercise 1
+
+Carry out a time series analysis using the unobserved-components method with monthly US electricity generation data (millions of kilowatt-hours) of all types: coal, natural gas, nuclear, oil and wind, 01/1973–12/2005 (`library(TSA); data(electricity)`). Use the interval from 01/1973 to 12/1989. Produce forecasts through the end of the year after the end of the sample. Produce as many plots as possible, interpret the fit, and compute error measures.
+:::
+
+# Exercise 1: Unobserved-components method
+## Data preparation
+
+We load the `TSA` package, which contains the `electricity` dataset, and restrict it to the requested interval (January 1973 to December 1989).
+
+```{r,message=FALSE, warning=FALSE}
+library(TSA)
+library(Metrics)
+library(forecast)
+```
+
+```{r}
+data(electricity)
+str(electricity)
+
+elec_full <- ts(as.numeric(electricity), start = c(1973, 1), frequency = 12)
+elec <- window(elec_full, start = c(1973, 1), end = c(1989, 12))
+str(elec)
+```
+
+## Elementary descriptive analysis
+
+We plot the original series together with a centred 12-period moving average (2×12-MA), suitable for removing monthly seasonality and highlighting the trend.
+
+```{r}
+plot(elec, type = "l", lwd = 1,
+     main = "Monthly US electricity generation (1973-1989)",
+     xlab = "Year", ylab = "Generation (million kWh)")
+
+elec.ma <- filter(elec, filter = c(1/24, rep(1/12, 11), 1/24))
+lines(elec.ma, col = "red", lwd = 2)
+
+legend("topleft", c("Original series", "Centred moving average (12 months)"),
+       lwd = c(1, 2), col = c("black", "red"))
+grid()
+```
+
+A clear upward trend and strong seasonality are visible, with peaks in summer and winter (higher consumption for cooling and heating). Moreover, the amplitude of seasonal swings grows with the level of the series, which suggests that a **multiplicative** model is more suitable than an additive one.
+
+```{r}
+X <- matrix(elec, ncol = 12, byrow = TRUE)  
+rownames(X) <- 1973:1989
+colnames(X) <- month.abb
+
+dif <- X[-1, ] - X[-nrow(X), ]
+coc <- X[-1, ] / X[-nrow(X), ]   
+
+CV_d <- sd(dif) / mean(dif)
+CV_c <- sd(coc) / mean(coc)
+
+CV_d
+CV_c
+
+if (CV_c > CV_d) {
+  cat("CV(c) >", "CV(d)  ->  ADDITIVE model\n")
+} else {
+  cat("CV(c) <", "CV(d)  ->  MULTIPLICATIVE model\n")
+}
+```
+The CV comparison confirms that the multiplicative model is more appropriate.
+
+
+## Series decomposition with `decompose()`
+We decompose the series into trend, seasonality and irregular component using the classical unobserved-components method with a multiplicative scheme.
+
+```{r}
+#| fig-height: 10
+#| fig-width: 8
+comp_elec <- decompose(elec, type = "multiplicative")
+plot(comp_elec, mar.multi = c(0, 6.5, 0, 2), cex.axis = 0.8)
+```
+
+The seasonal indices obtained are:
+
+```{r}
+(figure <- comp_elec$figure)
+plot(figure, type = "h", lwd = 2,
+     main = "Monthly seasonal indices",
+     xlab = "Month", ylab = "Seasonal index")
+abline(h = 1, lty = 2, col = "gray")
+```
+
+Indices exceed 1 in summer (June–August) and in the colder winter months (December–February), and fall slightly below 1 in the intermediate months (spring and autumn), which is consistent with higher electricity use for cooling and heating.
+
+We also plot the trend extracted by `decompose()`:
+
+```{r}
+plot(comp_elec$trend, type = "l", lwd = 2, col = "red",
+     main = "Trend of electricity generation",
+     xlab = "Year", ylab = "Generation (million kWh)")
+grid()
+```
+It suggests roughly exponential growth in later years after a more logarithmic appearance early on.
+
+## Trend estimation
+
+We fit the `decompose()` trend with a quadratic time model, as in the theory examples (the trend has `NA`s in the first and last 6 months because of the order-12 moving average; we use `na.action = na.exclude` to keep dates aligned).
+
+```{r}
+t <- as.numeric(time(comp_elec$trend))
+t2 <- t^2
+
+modelo <- lm(comp_elec$trend ~ t + t2, na.action = na.exclude)
+summary(modelo)
+```
+Because the descriptive look of the trend suggests a cubic polynomial may fit better, we study that next.
+
+```{r}
+modelo3 <- lm(comp_elec$trend ~ poly(t, 3), na.action = na.exclude)
+summary(modelo3)
+```
+The cubic model improves every summary measure, so it is selected as the most suitable description of the series trend.
+
+```{r}
+elec_ajustado <- fitted(modelo)
+elec_ajustado_ts <- ts(elec_ajustado, start = start(elec), frequency = 12)
+elec_ajustado_cubico <- fitted(modelo3)
+elec_ajustado_cubico_ts <- ts(elec_ajustado_cubico, start = start(elec), frequency = 12)
+
+plot(comp_elec$trend, type = "l", lwd = 1, col = "darkgreen",
+     main = "Observed trend vs fitted trends (quadratic and cubic)",
+     xlab = "Year", ylab = "Generation (million kWh)")
+lines(elec_ajustado_ts, col = "blue", lwd = 2)          # quadratic model (computed above)
+lines(elec_ajustado_cubico_ts, col = "red", lwd = 2)    # cubic model
+legend("topleft",
+       c("Trend (decompose)", "Fitted trend (quadratic lm)", "Fitted trend (cubic lm)"),
+       col = c("darkgreen", "blue", "red"), lwd = c(1, 2, 2))
+```
+
+The cubic model explains the extracted trend very well: $R^2$ is high, the overall model test has a very small p-value, and all coefficients are highly significant. The plot also shows a clearer fit for the cubic than for the quadratic.
+
+## Forecasts
+
+### Trend forecast
+
+We extrapolate the cubic trend from January 1973 through December 1990 (the year after the end of the estimation sample).
+
+```{r}
+t_pred <- seq(1973, 1990 + 11/12, by = 1/12)
+nuevos_datos <- data.frame(t = t_pred)
+
+prediccion <- predict(modelo3, nuevos_datos)
+prediccion_ts <- ts(prediccion, start = 1973, frequency = 12)
+
+plot(elec, type = "l", lwd = 1, col = "darkgreen",
+     xlim = c(1973, 1991), ylim = range(elec, prediccion, na.rm = TRUE),
+     main = "Original series, trend and trend forecast",
+     xlab = "Year", ylab = "Generation (million kWh)")
+lines(prediccion_ts, col = "red", lwd = 2)
+lines(comp_elec$trend, col = "blue", lwd = 2)
+legend("topleft",
+       c("Original series", "Trend forecast (cubic)", "Trend (decompose)"),
+       col = c("darkgreen", "red", "blue"), lwd = c(1, 2, 2))
+```
+
+### Final forecast (trend + seasonality)
+
+We multiply the trend forecast by the seasonal index for each month.
+
+```{r}
+a <- rep(figure, length(t_pred) / 12)
+prediccion_final <- prediccion * a
+prediccion_final_ts <- ts(prediccion_final, start = 1973, frequency = 12)
+
+plot(elec, type = "l", lwd = 1, col = "darkgreen",
+     xlim = c(1973, 1991), ylim = range(elec, prediccion_final, na.rm = TRUE),
+     main = "Final forecast (trend + seasonality)",
+     xlab = "Year", ylab = "Generation (million kWh)")
+lines(prediccion_ts, col = "blue", lwd = 2)
+lines(prediccion_final_ts, col = "red", lwd = 2)
+legend("topleft",
+       c("Original series", "Trend forecast", "Final forecast"),
+       col = c("darkgreen", "blue", "red"), lwd = c(1, 2, 2))
+```
+
+The final forecast tracks the observed series closely over 1973–1989 and continues the seasonal pattern coherently into the forecast year 1990.
+
+### Forecast for 1990
+
+We extract the predicted values for the year after the sample end, as required by the brief.
+
+```{r}
+prediccion_1990 <- window(prediccion_final_ts, start = c(1990, 1), end = c(1990, 12))
+
+plot(prediccion_1990, type = "o", pch = 19, col = "red", lwd = 2,
+     ylim = c(min(prediccion_1990), max(prediccion_1990) * 1.05),
+     main = "Electricity generation forecast for 1990",
+     xlab = "Month", ylab = "Generation (million kWh)")
+grid()
+
+text(x = time(prediccion_1990),
+     y = prediccion_1990,
+     labels = format(round(prediccion_1990), big.mark = ","),
+     pos = 3,      # 3 = above the point (1=below, 2=left, 4=right)
+     cex = 0.7,
+     col = "black")
+```
+
+The 1990 forecast keeps the extrapolated upward trend and the typical seasonal pattern, with maxima in summer and winter and minima in spring/autumn.
+
+## Error measures
+
+We compare fitted values with observations over the estimation period to quantify fit quality.
+
+```{r}
+actual <- elec
+predicho <- window(prediccion_final_ts, start = c(1973, 1), end = c(1989, 12))
+
+plot(actual, main = "Model fit over the observed period",
+     xlab = "Year", ylab = "Generation (million kWh)")
+lines(predicho, col = "blue", lwd = 1.5)
+legend("topleft", c("Observed", "Fitted"), col = c("black", "blue"), lwd = c(1, 1.5))
+```
+```{r}
+MSE <- mse(actual, predicho)
+RECM <- sqrt(MSE)
+EAM <- mae(actual, predicho)
+varianza <- var(actual)
+cociente <- as.numeric(MSE / varianza * 100)
+
+cat("Mean squared error:", MSE, "\n")
+cat("MSE as a percentage of the series variance:", cociente, "%\n")
+cat("Root mean squared error (RMSE):", RECM, "\n")
+cat("Mean absolute error (MAE):", EAM, "\n")
+```
+
+## Conclusions
+
+The unobserved-components method adequately recovers both the upward trend and the strong seasonal pattern of monthly US electricity generation from 1973 to 1989. Relative fitting error is moderate, indicating a good in-sample fit. The 1990 forecast reasonably extends the detected trend and seasonality.
+
+\pagebreak
+::: callout-note
+## Exercise 2
+Carry out a time series analysis using exponential smoothing with monthly US electricity generation data (millions of kilowatt-hours) of all types: coal, natural gas, nuclear, oil and wind, 01/1973–12/2005 (`library(TSA); data(electricity)`). Use the interval from 01/1973 to 12/1989. Produce forecasts through the end of the year after the end of the sample. Produce as many plots as possible, interpret the fit, and compute error measures.
+:::
+
+# Exercise 2: Exponential smoothing (Holt–Winters)
+
+Because Exercise 1 showed that a multiplicative model fits these data better, we fit a multiplicative Holt–Winters model.
+
+## Holt–Winters fit
+
+```{r}
+hw_mult <- HoltWinters(elec, seasonal = "multiplicative")
+
+plot(hw_mult, main = "Multiplicative Holt-Winters")
+```
+The selected model tracks both trend and seasonality well over the whole study period. Fitted smoothing parameters:
+
+```{r}
+hw_mult$alpha
+hw_mult$beta
+hw_mult$gamma
+```
+
+## Forecasts through end of 1990
+
+We forecast over the same horizon as in Exercise 1.
+```{r}
+pred_hw <- forecast(hw_mult, h = 12)
+plot(pred_hw,
+     main = "Holt-Winters forecast of electricity generation (1990)",
+     xlab = "Year", ylab = "Generation (million kWh)")
+```
+
+```{r}
+pred_1990_hw <- pred_hw$mean
+plot(pred_1990_hw, type = "o", pch = 19, col = "red", lwd = 2,
+     ylim = c(min(pred_1990_hw), max(pred_1990_hw) * 1.05),
+     main = "Holt-Winters electricity generation forecast for 1990",
+     xlab = "Month", ylab = "Generation (million kWh)")
+grid()
+text(x = time(pred_1990_hw), y = pred_1990_hw,
+     labels = format(round(pred_1990_hw), big.mark = ","),
+     pos = 3, cex = 0.7, col = "black")
+```
+
+The 1990 forecast shows the same kind of coherence as in Exercise 1.
+
+## Residual diagnostics
+
+```{r}
+plot.ts(pred_hw$residuals, main = "Holt-Winters residuals",
+        ylab = "Residual")
+abline(h = 0, col = "gray", lty = 2)
+```
+
+```{r}
+acf(pred_hw$residuals, na.action = na.pass, lag.max = 24,
+    main = "ACF of Holt-Winters residuals")
+```
+
+Residuals largely resemble white noise, without an obvious residual trend or seasonality, except in the last years where residuals tend to become more positive (overestimation). The ACF shows a mainly annual significant spike, i.e. dependence between a month and the same month one year earlier.
+
+## Error measures
+
+```{r}
+acc_hw <- accuracy(pred_hw)
+acc_hw
+
+RECM_hw <- acc_hw[1, "RMSE"]
+EAM_hw <- acc_hw[1, "MAE"]
+cociente_hw <- as.numeric(RECM_hw^2 / var(elec) * 100)
+
+cat("Root mean squared error (RMSE):", RECM_hw, "\n")
+cat("Mean absolute error (MAE):", EAM_hw, "\n")
+cat("RMSE^2 as a percentage of the series variance:", cociente_hw, "%\n")
+```
+
+## Comparison with Exercise 1
+
+```{r}
+comparacion <- data.frame(
+  Method = c("Unobserved components", "Holt-Winters"),
+  RMSE   = c(RECM, RECM_hw),
+  MAE    = c(EAM, EAM_hw)
+)
+comparacion
+```
+
+## Conclusions
+
+Holt–Winters exponential smoothing captures the trend and behaviour of this series slightly better than the unobserved-components method of Exercise 1. That shows up in better RMSE and MAE, although both approaches remain very close.
+
+
+
+\pagebreak
+
+::: callout-note
+## Exercise 3
+
+Carry out a time series analysis with the Box–Jenkins methodology on a time series dataset. Any available web source may be used, such as www.ine.es. For example, one could select the CPI (overall or a subgroup) or the IPI (overall or for a region). The electricity data from Exercises 1 and 2 may also be used. Choose any twelve years. Produce forecasts through the end of the year after the end of the sample. Produce as many plots as possible and interpret the fit.
+
+Recall that the (indicative) Box–Jenkins steps are:
+
+1. Read the data.
+2. Plot the series.
+3. Decide whether it is stationary or needs a prior transformation.
+4. Test whether the transformed series can be treated as stationary.
+5. Identify the ARMA structure of the transformed data and hence the ARIMA structure of the original data.
+6. Estimate parameters.
+7. Diagnostics and final model selection.
+8. Forecast results.
+:::
+
+# Exercise 3: Box–Jenkins methodology (ARIMA)
+
+We reuse the `TSA` electricity generation data, as the brief itself suggests. Because only twelve years are required, we take **January 1978 to December 1989** (the most recent twelve years of the Exercises 1–2 window). Forecasts for the following year (1990) are then directly comparable with the earlier methods; since the series actually runs to 2005, we can also compare the forecast with the observed 1990 values.
+
+```{r,message=FALSE, warning=FALSE}
+library(tseries)
+```
+
+## Steps 1–2: Data and plot
+
+```{r}
+elec3 <- window(elec_full, start = c(1978, 1), end = c(1989, 12))
+str(elec3)
+
+plot(elec3, type = "l", lwd = 1.5, col = "steelblue",
+     main = "Monthly US electricity generation (1978-1989)",
+     xlab = "Year", ylab = "Generation (million kWh)")
+grid()
+```
+
+## Step 3: Variance stationarity and transformation
+
+We check the mean–standard-deviation relationship by year (theory procedure for deciding on a Box–Cox transform).
+
+```{r}
+anuales <- matrix(elec3, nrow = 12, byrow = FALSE)  # each column is a year
+
+medias <- apply(anuales, 2, mean)
+desv   <- apply(anuales, 2, sd)
+
+plot(medias, desv, xlab = "Annual mean", ylab = "Annual standard deviation",
+     main = "Mean-variance relationship by year")
+
+reg_mv <- lm(log(desv) ~ log(medias))
+summary(reg_mv)
+```
+
+The slope of `log(desv)` on `log(medias)` gives $1-\lambda$ in the Box–Cox family. We compare with `BoxCox.lambda()`:
+
+```{r}
+lambda <- BoxCox.lambda(elec3, lower = 0, upper = 2)
+lambda
+```
+
+```{r}
+elec3_t <- BoxCox(elec3, lambda)
+
+plot(elec3_t, lwd = 1.2, col = "darkorange",
+     main = paste0("Transformed series (Box-Cox, lambda = ", round(lambda, 3), ")"),
+     xlab = "Year", ylab = "Transformed generation")
+grid()
+```
+
+We use `BoxCox()`/`InvBoxCox()` from `forecast` with the estimated `lambda` to stabilise variance before continuing.
+
+## Steps 3–4: Mean stationarity and unit-root test
+
+First the ACF of the transformed series (undifferenced):
+
+```{r}
+acf(elec3_t, lag.max = 36, main = "ACF of the transformed series")
+```
+
+We difference to achieve mean stationarity.
+
+```{r}
+elec3_diff <- diff(elec3_t, lag = 1, differences = 1)
+acf(elec3_diff, lag.max = 36, main = "ACF of the transformed series after 1 difference")
+
+```
+
+
+```{r}
+elec3_diff <- diff(elec3_diff, lag = 12, differences = 1)
+acf(elec3_diff, lag.max = 36, main = "ACF after regular and seasonal differencing")
+```
+
+```{r}
+plot(elec3_diff, main = "Transformed series after regular and seasonal differencing",
+     xlab = "Year", ylab = "")
+grid()
+```
+It now looks closer to white noise.
+
+We formally test stationarity of the differenced series with the augmented Dickey–Fuller test:
+
+```{r}
+adf.test(elec3_diff)
+```
+The series is therefore treated as stationary.
+
+## Step 5: Identifying the ARMA/ARIMA structure
+
+We plot the ACF and PACF of the stationary series, plus the extended ACF (`eacf`), to identify candidate orders:
+
+```{r}
+acf(elec3_diff, lag.max = 36, main = "ACF of the stationary series")
+pacf(elec3_diff, lag.max = 36, main = "PACF of the stationary series")
+```
+
+```{r}
+eacf(elec3_diff)
+```
+From the plots, an ARMA(0,2) regular part with seasonal ARMA(1,2) looks reasonable.
+
+## Steps 6–7: Parameter estimation and diagnostics
+
+**Manual candidate**, with the differencing structure from the previous step and ARMA(1,1) terms in both regular and seasonal parts initially:
+
+```{r}
+fit_manual <- arima(elec3_t, order = c(0, 1, 2),
+                     seasonal = list(order = c(1, 1, 2), period = 12))
+fit_manual
+```
+Some seasonal parameters have large standard errors. We simplify the seasonal part.
+
+```{r}
+fit_manual <- arima(elec3_t, order = c(0, 1, 2),
+                     seasonal = list(order = c(1, 1, 1), period = 12))
+fit_manual
+```
+This model is better by AIC and by the standard errors.
+
+
+```{r}
+#| fig-height: 9
+#| fig-width: 7
+tsdiag(fit_manual)
+```
+
+```{r}
+Box.test(residuals(fit_manual), lag = 12, type = "Ljung-Box")
+```
+The diagnostics look satisfactory.
+
+**Automatic model**, letting `auto.arima()` search for the best $(p,d,q)(P,D,Q)_{12}$ combination with the same Box–Cox transform:
+
+```{r}
+ajuste_auto <- auto.arima(elec3, lambda = lambda, seasonal = TRUE,
+                           stepwise = FALSE, approximation = FALSE)
+ajuste_auto
+```
+
+```{r}
+checkresiduals(ajuste_auto)
+```
+
+**Final model selection.** We compare both models by AIC (both on the same transformed scale, so AICs are comparable):
+
+```{r}
+cat("AIC manual model:  ", AIC(fit_manual), "\n")
+cat("AIC auto.arima model:", AIC(ajuste_auto), "\n")
+
+modelo_final <- if (AIC(fit_manual) < AIC(ajuste_auto)) fit_manual else ajuste_auto
+cat("Selected final model:",
+    if (AIC(fit_manual) < AIC(ajuste_auto)) "manual model" else "auto.arima", "\n")
+```
+Both models are good: residuals behave roughly like white noise and AICs are very close, so the manual model is selected by a small margin.
+
+## Step 8: Forecasts
+
+We extrapolate the selected model 12 months ahead (January–December 1990), inverting the Box–Cox transform to recover the original scale.
+
+```{r}
+pred_final <- predict(modelo_final, n.ahead = 12)
+
+pred_mean <- if (identical(modelo_final, fit_manual)) {
+  InvBoxCox(pred_final$pred, lambda)
+} else {
+  pred_final$pred
+}
+
+pred_mean_ts <- ts(pred_mean, start = c(1990, 1), frequency = 12)
+
+pred_mean_ts
+```
+
+```{r}
+plot(elec3, xlim = c(1978, 1991), ylim = range(elec3, pred_mean, na.rm = TRUE),
+     type = "l", lwd = 1, col = "steelblue",
+     main = "Box-Jenkins electricity generation forecast (1990)",
+     xlab = "Year", ylab = "Generation (million kWh)")
+lines(pred_mean_ts, col = "red", lwd = 2)
+legend("topleft", c("Observed series (1978-1989)", "Box-Jenkins forecast (1990)"),
+       col = c("steelblue", "red"), lwd = c(1, 2))
+```
+## Conclusions
+Applied to the most recent twelve years (1978–1989), Box–Jenkins systematically identifies the regular and seasonal dependence structure of electricity generation after a Box–Cox transform to stabilise variance and the regular and seasonal differences needed for stationarity, yielding a seasonal ARIMA whose residuals behave reasonably like white noise. Unlike Exercises 1 and 2, here we can compare the 1990 forecast with observed values, which is a stricter check of generalisation than in-sample fit alone.
+
+### Comparison with the actual 1990 values
+
+Because `electricity` in `TSA` actually runs to December 2005, we have the real 1990 data and can validate forecasts against observations.
+
+```{r}
+#| fig-height: 6
+#| fig-width: 9
+real_1990 <- window(elec_full, start = c(1990, 1), end = c(1990, 12))
+
+plot(real_1990, type = "o", pch = 19, col = "black", lwd = 2,
+     ylim = range(c(real_1990, prediccion_1990, pred_1990_hw, pred_mean), na.rm = TRUE),
+     main = "Three methods vs actual 1990 values",
+     xlab = "Month", ylab = "Generation (million kWh)")
+lines(prediccion_1990, col = "blue", lwd = 2, type = "o", pch = 15)
+lines(pred_1990_hw, col = "darkgreen", lwd = 2, type = "o", pch = 18)
+lines(pred_mean_ts, col = "red", lwd = 2, type = "o", pch = 17)
+legend("topleft",
+       c("Actual (1990)", "Unobserved components (Ex. 1)", "Holt-Winters (Ex. 2)", "Box-Jenkins (Ex. 3)"),
+       col = c("black", "blue", "darkgreen", "red"), lwd = 2, pch = c(19, 15, 18, 17))
+```
+
+```{r}
+RECM_arima <- sqrt(mse(as.numeric(real_1990), as.numeric(pred_mean)))
+EAM_arima  <- mae(as.numeric(real_1990), as.numeric(pred_mean))
+
+cat("RMSE vs actual 1990 values:", RECM_arima, "\n")
+cat("MAE  vs actual 1990 values:", EAM_arima, "\n")
+```
+The model fits the test-year values reasonably well.
+
+# Final comparison of the three methods against 1990
+We finally compare the three implemented models.
+```{r}
+RECM_real_1 <- sqrt(mse(as.numeric(real_1990), as.numeric(prediccion_1990)))
+EAM_real_1  <- mae(as.numeric(real_1990), as.numeric(prediccion_1990))
+
+RECM_real_2 <- sqrt(mse(as.numeric(real_1990), as.numeric(pred_1990_hw)))
+EAM_real_2  <- mae(as.numeric(real_1990), as.numeric(pred_1990_hw))
+
+comparacion_final <- data.frame(
+  Method    = c("Unobserved components (Ex. 1)", "Holt-Winters (Ex. 2)", "Box-Jenkins/ARIMA (Ex. 3)"),
+  RMSE_1990 = c(RECM_real_1, RECM_real_2, RECM_arima),
+  MAE_1990  = c(EAM_real_1, EAM_real_2, EAM_arima)
+)
+comparacion_final
+```
+
+Graphically and via RMSE and MAE, the best method is unobserved components, likely thanks to the strong trend fit. ARIMA is a solid competitor because it also models the stochastic dependence structure, but it does not track the real 1990 path as closely. Another takeaway is that getting the trend right is central: here unobserved components win mainly through a better trend. As a possible improvement for this same project, one could incorporate a cubic trend adjustment into the ARIMA modelling path.

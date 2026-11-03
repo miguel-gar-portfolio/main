@@ -1,0 +1,392 @@
+---
+title: "Machine Learning I"
+author: "Miguel García Moreno"
+date: "2026-03-28"
+output: 
+  pdf_document:
+    toc: no
+    number_sections: yes
+  documentclass: report
+---
+\pagebreak
+
+```{=latex}
+\setcounter{tocdepth}{4}
+\tableofcontents
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+knitr::opts_knit$set(root.dir = normalizePath(".."))
+set.seed(123)
+```
+
+\pagebreak
+
+# Section 1. K-means and agglomerative hierarchical clustering
+
+Working with `datosred`, without using the `label` variable, apply and interpret two cluster-analysis techniques.
+
+## Data loading and preprocessing
+
+```{r}
+# Package installation
+paquetes<-c('ggplot2','cluster','factoextra','ks','kknn','cat','naivebayes','pROC')
+for (i in 1:length(paquetes))
+{
+  if(require(paquetes[i],character.only = TRUE)) cat(paquetes[i], " loaded successfully\n") 
+  else {
+    cat("Trying to install",paquetes[i])
+    install.packages(paquetes[i])
+    if(require(paquetes[i],character.only = TRUE)) cat(paquetes[i], " loaded successfully")   
+    else {
+      stop("Could not install ", paquetes[i])
+    }
+  }
+}
+```
+
+
+```{r}
+# First five digits of the national ID (seed)
+m <- 29509
+
+# Load data-generation script
+source("data/GenerarDatos.R")
+
+# Inspect structure
+str(datosred)
+```
+
+We drop the *label* variable (it will not be used to build the clusters) and scale the features.
+
+```{r}
+X <- datosred[, !(names(datosred) %in% "label")]
+X_scaled <- scale(X)
+```
+
+
+## Technique 1: K-means
+
+We choose K-means as the first technique and select the model using the elbow / silhouette criterion.
+
+### Silhouette method
+
+```{r}
+factoextra::fviz_nbclust(x = X_scaled, FUNcluster = kmeans, method = "silhouette", k.max = 15) +
+  labs(title = "Optimal number of clusters")
+```
+
+If we did not know how many categories exist in the dataset, we could use the silhouette method to choose the optimal number of clusters. Here, knowing that there are two categories, we set K = 2. We also see that at k = 3 the average silhouette distance worsens slightly. We therefore fit the model with k = 2 and later compare the results with the true labels.
+
+### Model fit
+
+```{r}
+km <- kmeans(X_scaled, centers = 2, nstart = 25)
+
+# Size of each cluster
+km$size
+
+# Cluster centres
+km$centers
+```
+
+We add the classification to the data set so that we can later compare it with the true labels and assess the quality of the fit.
+
+```{r}
+datosred_copy <- datosred
+datosred_copy$cluster_kmeans <- as.factor(km$cluster)
+```
+
+### Graphical representation
+
+```{r}
+fviz_cluster(object = km, data = X_scaled, show.clust.cent = TRUE, ellipse.type = "euclid",
+             star.plot = TRUE, repel = TRUE) + ggplot2::labs(title = "K-means plot") + 
+  theme_bw() + theme(legend.position = "none") 
+```
+
+Because there are more than two dimensions, this plot shows each element's classification in terms of the first two principal components.
+
+---
+
+## Technique 2: Agglomerative hierarchical clustering
+
+As the second technique we use agglomerative hierarchical clustering.
+
+### Building the dendrogram
+
+```{r}
+dist_matrix <- dist(X_scaled)
+hc <- hclust(dist_matrix, method = "ward.D2")
+plot(
+  hc,
+  main = "Dendrogram - Ward method",
+  sub = "",
+  xlab = "",
+  ylab = "Distance",
+  cex = 0.6,          # smaller labels
+  hang = -1           # align leaves
+)
+rect.hclust(hc, k = 2, border = "red")
+```
+
+We show the dendrogram with Ward's method, which minimises within-cluster variance. Again we choose k = 2 for later comparison with the true labels. The red boxes highlight the two clusters obtained.
+
+We also display the distances with a heatmap.
+
+```{r}
+heatmap(as.matrix(dist_matrix),main = "Heatmap")
+```
+
+### Model fit
+
+We store the resulting classification in the data set so that we can later compare it with the true labels and assess the quality of the fit.
+
+```{r}
+clusters_hc <- cutree(hc, k = 2)
+datosred_copy$cluster_hier <- as.factor(clusters_hc)
+```
+
+---
+
+## Interpretation of results
+
+Confusion matrices for each method:
+
+```{r}
+levels(datosred_copy$cluster_kmeans) <- c("Pullover", "Ankle boot")
+levels(datosred_copy$cluster_hier) <- c("Pullover", "Ankle boot")
+
+#k-means
+table(datosred_copy$cluster_kmeans, datosred_copy$label)
+#Hierarchical clustering
+table(datosred_copy$cluster_hier, datosred_copy$label)
+```
+
+In both cases the classification is little better than chance. Hierarchical clustering shows a slightly better predictive ability.
+
+---
+
+# Section 2. Weighted KNN and bootstrap 632+
+
+Still using `datosred`, configure a weighted KNN model by cross-validation and estimate its generalisation ability with the bootstrap 632+ method.
+
+Data preparation:
+
+```{r}
+set.seed(12345)
+
+m <- dim(datosred)[1]  # number of cases
+
+test <- sample(1:m, size = round(m/3), replace = FALSE,
+              prob = rep(1/m, m)) 
+
+# training set
+x_train <- datosred[-test,]
+# test set
+x_test <- datosred[test,]  
+```
+
+## Model fit
+
+We fit the model by cross-validation.
+
+```{r}
+# Weighted KNN on the data
+knn_model_cv <- train.kknn(label ~ ., x_train, kmax = 15,
+                          kernel = c("triangular", "rectangular",
+                          "epanechnikov", "optimal","biweight",
+                          "triweight","gaussian","cos", "inv"), 
+                          distance = 1)
+knn_model_cv
+```
+
+The best model uses k = 2 neighbours and a rectangular kernel. Graphical summary of the results:
+
+```{r}
+plot(knn_model_cv,main="WkNN classification on datosred")
+```
+
+The plot shows how the error rate evolves with the number of neighbours and the kernel type. Up to 6 neighbours the rectangular kernel performs best, and k = 2 is indeed optimal.
+
+Confusion matrix:
+
+```{r}
+fit_test <- predict(knn_model_cv, newdata = x_test)
+confusion_matrix <- table("True_class"= x_test$label, "WkNN_class"= fit_test)
+confusion_matrix
+```
+
+```{r}
+prop.table(confusion_matrix)
+```
+
+Results on the test set are good.
+
+## Generalisation ability via bootstrap 632+
+
+First we compute the empirical error of the model fitted on the full training set.
+
+```{r}
+best_knn_model = kknn(label ~ ., train=datosred, test = datosred, k=2,
+                      kernel="rectangular", distance=1)
+
+table(datosred$label, predict(best_knn_model))
+erroremp<- mean(datosred$label!=predict(best_knn_model))
+cat("Empirical error =",100*erroremp ,"% \n")
+```
+
+We obtain a zero error. Next we build the bootstrap samples and their associated models, and compute the bootstrap and OOB errors.
+
+```{r}
+B<- 2000 # number of bootstrap samples
+set.seed(13579)
+
+###### Variables ########
+errorboot=numeric(B)
+errorOOBb=numeric(B)
+n= nrow(datosred)
+Preditodos=matrix("",n,B)
+IndicesOOB=matrix(0,n,B)
+#########################
+
+
+# Bootstrap loop
+for (b in 1:B)
+{ 
+  if (b%%200==0) cat("Bootstrap sample number ",b,"\n")
+# Generate bootstrap sample of indices
+  indib<- sample(n,rep=T)
+# Indices not included in indib
+  indiOOB<-setdiff(1:n,indib)
+# Fit model on the bootstrap sample
+  boot_model<-kknn(label ~ ., train=datosred[indib,], test = datosred, 
+                   k=2, kernel="rectangular", distance=1)
+# Predictions of this model on the training sample
+  full_prediction = predict(boot_model)
+# Error rate on the original sample
+  errorboot[b]<- mean(full_prediction != datosred$label) 
+# Store the n predictions for model b
+# as.character so category labels are stored instead of 1 and 2
+  Preditodos[,b]=as.character(full_prediction) 
+  #print(preditodos[,b])
+# Cases not included in bootstrap sample b
+  IndicesOOB[indiOOB,b] =1
+  errorOOBb<- mean(Preditodos[indiOOB,b] != datosred$label[indiOOB])
+}
+
+
+# Bootstrap and OOB error
+errorB<- mean(errorboot)
+errorOOB<- mean(errorOOBb)
+```
+
+
+We now compute the weighting coefficient w and finally the bootstrap 632+ error.
+
+```{r}
+labels <- datosred$label
+pred   <- best_knn_model$fitted.values
+
+######### Variables #########
+classes <- levels(labels)
+noinf <- 0
+#############################
+
+# Loop to compute noinf
+for (i in classes) {
+  # Class proportion
+  pi <- sum(labels == i) / n
+  
+  # Class-specific error
+  qi <- sum(pred[labels == i] != i) / n
+  
+  noinf <- noinf + pi * (1 - qi)
+}
+
+# Weighting coefficient w
+tsr = (errorOOB - erroremp) / (noinf - erroremp)
+w = (0.632) / (1 - 0.368 * tsr)
+
+# 632+ error
+error632plus = (1 - w) * erroremp + w * errorOOB
+error632plus
+```
+
+The bootstrap 632+ error is 7.6%, which indicates that the model has good generalisation ability.
+
+```{r}
+tsr
+```
+
+The relative overfitting rate (tsr) is also very low.
+
+# Section 3. Kernel Naive Bayes. Generalisation ability and AUC
+
+Next, split the 1000 cases in `datos` into training and test subsets (75% and 25%). Build a Naive Bayes model in which densities are estimated with the kernel method. Estimate generalisation ability via overall and per-class accuracy, as well as the ROC curve and AUC.
+
+Data preparation:
+
+```{r}
+# partition
+set.seed(12345)
+m <- dim(datos)[1]  
+train <- sample(1:m, size = round(0.75*m), replace = FALSE, prob = rep(1/m, m))
+# training data set
+test <- datos[-train,]
+```
+
+## Model fit and evaluation of generalisation ability
+
+We fit Naive Bayes with kernel density estimates, predict on the test set, and compute the confusion matrix.
+
+```{r}
+model_nb <- naive_bayes(label ~ ., data = datos[train,],usekernel = TRUE)
+pred_nb = predict(model_nb, test, type = "class")
+table(test$label, pred_nb)
+```
+
+The confusion matrix shows very good predictive performance.
+
+Overall and per-class accuracy:
+
+```{r}
+# overall accuracy
+accuracy <- sum(pred_nb == test$label) / nrow(test)
+cat("Overall accuracy:", round(accuracy * 100, 2), "%\n")
+```
+
+Around 90%. Because the data set is balanced, overall accuracy is a good indicator of generalisation ability—and this is a very strong result.
+
+```{r}   
+# per-class accuracy
+acierto_por_categoria <- prop.table(table(test$label, pred_nb), 1)
+acierto_por_categoria_df <- as.data.frame(acierto_por_categoria)
+colnames(acierto_por_categoria_df) <- c("Category", "Prediction", "Accuracy")
+print(acierto_por_categoria_df)
+
+```
+
+For "Ankle boot" the model has a slightly harder time than for "Pullover"; even so, 86% is still a high rate.
+
+## Graphical representation
+
+ROC curve:
+
+```{r}
+# ROC curve and AUC
+# Prediction probabilities are needed for the ROC curve
+pred_nb_prob <- predict(model_nb, test, type = "prob")
+roc_obj <- roc(test$label, pred_nb_prob[, 2], levels = rev(levels(test$label)))
+plot(roc_obj)
+```
+
+It is very strong—close to a perfect fit, almost an "L" shape.
+
+```{r}
+auc_value <- auc(roc_obj)
+cat("AUC:", round(auc_value, 4), "\n")
+```
+
+The AUC is very high, confirming that the model is good, in line with the earlier metrics and plots.

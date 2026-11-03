@@ -24,6 +24,8 @@ portfolio/
 | Project | Description | Tech | Status |
 | --- | --- | --- | --- |
 | [customer-propensity](projects/customer-propensity/) | Customer-propensity classification, plus a proposal for detecting legal company names | pandas, scikit-learn, XGBoost, SHAP | Complete |
+| [time-series-analysis](projects/time-series-analysis/) | Unobserved components, Holt–Winters, and ARIMA forecasts of US monthly electricity generation | R, Quarto, forecast | Complete |
+| [clustering-knn-naive-bayes](projects/clustering-knn-naive-bayes/) | K-means, hierarchical clustering, weighted KNN, and kernel Naive Bayes on a two-class clothing sample | R, kknn, naivebayes | Complete |
 
 ## Tech stack
 
