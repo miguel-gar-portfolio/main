@@ -26,6 +26,11 @@ portfolio/
 | [customer-propensity](projects/customer-propensity/) | Customer-propensity classification, plus a proposal for detecting legal company names | pandas, scikit-learn, XGBoost, SHAP | Complete |
 | [time-series-analysis](projects/time-series-analysis/) | Unobserved components, Holt–Winters, and ARIMA forecasts of US monthly electricity generation | R, Quarto, forecast | Complete |
 | [clustering-knn-naive-bayes](projects/clustering-knn-naive-bayes/) | K-means, hierarchical clustering, weighted KNN, and kernel Naive Bayes on a two-class clothing sample | R, kknn, naivebayes | Complete |
+| [count-data](projects/count-data/) | Zero-altered and zero-inflated models for a count response with excess zeros | R, pscl, MASS | Complete |
+| [regularized-regression](projects/regularized-regression/) | Elastic-net regression after ordinary least squares fails from multicollinearity | R, glmnet | Complete |
+| [kernel-regression](projects/kernel-regression/) | Kernel density and kernel regression on the UCI Auto MPG sample | R, Quarto, ks, np | Complete |
+| [feature-selection-boosting](projects/feature-selection-boosting/) | LDA, gradient boosting, and XGBoost on a two-class clothing sample | R, caret, xgboost | Complete |
+| [dungeons](projects/dungeons/) | Ordinal and binary prediction of RPG dungeon difficulty | R, Quarto, caret, randomForest | Complete |
 
 ## Tech stack
 

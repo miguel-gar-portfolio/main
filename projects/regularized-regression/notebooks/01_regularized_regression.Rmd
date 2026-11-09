@@ -1,0 +1,195 @@
+---
+title: "Regularized regression"
+author: "Miguel García Moreno"
+date: "2026-03-05"
+output:
+  pdf_document:
+    toc: false
+    number_sections: true
+header-includes:
+  - \let\oldmaketitle\maketitle
+  - \renewcommand{\maketitle}{}
+---
+
+```{=latex}
+\begin{titlepage}
+  \centering
+  \vspace*{0.28\textheight}
+  {\Huge\bfseries Regularized regression\par}
+  \vspace{2cm}
+  {\Large Miguel García Moreno\par}
+  \vspace{1cm}
+  {\large 2026-03-05\par}
+  \vfill
+\end{titlepage}
+
+\pagenumbering{arabic}
+
+\begin{abstract}
+This project fits a multiple linear regression for the response against the remaining covariates, diagnoses extreme multicollinearity, and applies elastic-net regularization with glmnet over a grid of alpha values. The best model is chosen by cross-validation using the one-standard-error rule.
+\end{abstract}
+\clearpage
+
+\setcounter{tocdepth}{4}
+\tableofcontents
+\clearpage
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = normalizePath(".."))
+```
+
+# PACKAGE INSTALLATION
+```{r, results='hide'}
+packages <- c('glmnet','Rcpp','foreach','survival','shape','utils','methods','Matrix','car')
+for (i in 1:length(packages))
+{
+  if(require(packages[i],character.only = TRUE)) cat(packages[i], " loaded successfully\n") 
+  else {
+    cat("Trying to install", packages[i], "\n")
+    install.packages(packages[i])
+    if(require(packages[i],character.only = TRUE)) cat(packages[i], " loaded successfully\n")   
+    else {
+      stop("Could not install ", packages[i])
+    }
+  }
+}
+```
+\pagebreak
+
+# DATA EXTRACTION AND PREPROCESSING
+```{r}
+load("data/raw/AEM_03_Regularization_data.RData")
+```
+
+# DATA SET PREPARATION 
+Removal of 6 variables according to the ID number. If the ID ends in “abcd”, remove 6 variables among  
+x1a,  x2a,  x3a,  x1b,  x2b,  x4b,  x1c,  x3c,  x4c,  x2d,   x3d,   x4d  
+```{r}
+a=9 
+b=3
+c=5
+d=6 
+elim=c(19,29,39,13,23,43) 
+datos=datos[,-elim] 
+```
+
+# MULTIPLE LINEAR MODEL  
+Obtain the multiple regression model of variable Yj against the remaining variables. Analyse the 
+multicollinearity problem.
+
+## MODEL CONSTRUCTION
+```{r}
+lm.fit <- lm(Y~.,data=datos)
+summary(lm.fit)
+```
+We observe that the model should exclude several variables that are not statistically significant. Even so, it achieves a good $R^2$. We also find a low $p$-value, rejecting the fundamental hypothesis test, i.e., rejecting that all model coefficients are equal to $0$.
+
+## RESIDUAL ANALYSIS
+```{r}
+par(mfrow=c(2,2))
+plot(lm.fit)
+```
+The residuals appear consistent with normality.
+
+## MULTICOLLINEARITY ANALYSIS
+```{r}
+vif(lm.fit) 
+```
+There is extreme multicollinearity, which indicates that this model cannot be implemented because it fails the assumptions. Recall that values above 5 are considered evidence of multicollinearity, and here the VIFs are highly disproportionate. 
+
+```{r}
+det(vcov(lm.fit))
+```
+The determinant of the design covariance matrix is extremely small, which would make the linear model “blow up”.
+
+
+# REGULARIZATION MODEL
+Apply elastic-net regularization with the glmnet library for alpha values: 0, 0.05, 0.15, 0.25, 0.35, 0.45, 0.55, 0.65, 0.75, 0.85, 0.95, 1. Choose the best model by cross-validation and compare the models obtained.
+
+## MODEL CONSTRUCTION
+We prepare the design matrix and the response vector.
+```{r}
+mx=as.matrix(datos[,2:ncol(datos)])  
+my=as.matrix(datos[,1])
+```
+
+We build cross-validated models over 12 $\alpha$ values and the default 100 $\lambda$ values, for up to 1200 models as an upper bound. 
+```{r}
+alphas <- c(0, 0.05, 0.15, 0.25, 0.35, 0.45, 0.55, 0.65, 0.75, 0.85, 0.95, 1)
+
+cv_models <- lapply(alphas, function(a) {
+  set.seed(123) # for reproducibility
+  cv.glmnet(mx,my,keep=TRUE, alpha = a)
+})
+```
+
+## MODEL SELECTION
+We use the $1se$ rule to select the best model for each $alpha$.
+```{r}
+cv_1se <- function(cv_models, alphas){
+cv_errors_1se <- sapply(cv_models, function(model) {
+  model$cvm[which(model$lambda == model$lambda.1se)]
+})
+cv_lambda_index <- sapply(cv_models, function(model) {
+  which(model$lambda == model$lambda.1se)
+})
+cv_lambda_value <- sapply(cv_models, function(model) {
+  model$lambda[which(model$lambda == model$lambda.1se)]
+})
+
+df<- data.frame(
+  cvm = cv_errors_1se,
+  lambda_index = cv_lambda_index,
+  lambda = cv_lambda_value,
+  alphas = alphas
+)
+return(df)
+}
+df=cv_1se(cv_models,alphas)
+df
+```
+Note that the CVM is very similar across all $\alpha$ values.
+
+We now check which $\alpha$ yields the best results in terms of mean squared error.
+```{r}
+best_alpha_model_index <-which(df$cvm == min(df$cvm))
+best_alpha_model_params <- df[best_alpha_model_index,]
+best_alpha_model_params
+```
+The best model has $\alpha=0.45$.
+
+```{r}
+set.seed(123)
+best_alpha_model = cv.glmnet(mx,my,keep=TRUE, alpha = 0.45)
+```
+
+We now inspect some features of the best model.  
+We find a suitable value for $\lambda$.
+```{r}
+nCVopt = which(best_alpha_model$lambda == best_alpha_model$lambda.1se)
+best_alpha_model$lambda[nCVopt]
+```
+
+We plot the information about $\lambda$.
+```{r}
+plot(best_alpha_model)
+```
+
+
+```{r}
+best_alpha_model$glmnet.fit
+```
+
+```{r}
+coef(best_alpha_model)
+```
+Although $\lambda = 0.02876513$ is optimal under the 1se rule, a larger $\lambda$ may be preferable here; for example, $0.0729$ still keeps an $R^2$ of about $93\%$ but with 27 variables instead of 34.
+
+Finally, we make a prediction with the 1se model. 
+
+```{r}
+mxpred=mx[1001:1010,]  
+predict(best_alpha_model, mxpred,   s = best_alpha_model$lambda.1se, type=c("link")) 
+```

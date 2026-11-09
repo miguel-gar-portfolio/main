@@ -1,0 +1,405 @@
+---
+title: "Kernel Regression Assignment"
+author: "Miguel García Moreno <br/> Hugo Montilla Anta <br/> Lola Velasco Ballesta"
+date: today
+
+format:
+  pdf:
+    toc: true
+    latex_engine: xelatex
+    output-file: kernel_regression.pdf
+  typst: 
+    toc: true
+    output-file: "kernel_regression.pdf"
+editor: source
+---
+
+# Variables
+
+We prepare the table by renaming the columns for convenience.
+
+```{r}
+data <- read.table("data/raw/auto-mpg.data")
+colnames(data) <- c("mpg","cylinders","displacement","horsepower",
+                     "weight","acceleration","model year",
+                     "origin","car name")
+```
+
+We define the variables as requested. Careful!: x1 has `NA` values, so a mask is created to select those values and later be able to redefine x1 without those elements.
+
+```{r}
+y <- data$mpg
+x1 <- as.numeric(data$horsepower)
+x2 <- data$weight
+
+mask=is.na(x1)
+x1<- x1[!mask]  
+```
+
+Once the variables are prepared we can move on to the exercises.
+
+# Task 1
+
+::: callout-note
+## Exercise 1
+
+Determine the bandwidth parameter for the density function estimation of y, using a Gaussian kernel, with the following methods: cross-validation and plug-in.
+:::
+
+To determine the bandwidth values we will use the following functions, which use the Gaussian kernel by default.
+
+```{r}
+hvc_y=bw.ucv(y) #  Cross-validation
+hvc_y
+hpi_y=bw.SJ(y)  #  Plug-in
+hpi_y
+```
+
+::: callout-note
+## Exercise 2
+
+Plot the associated kernel estimators on the same graph. Briefly comment on the result.
+:::
+
+We define the different estimators, determining the bandwidths that should be used.
+
+```{r}
+d1_y=density(y, bw = hvc_y) # Cross-validation
+d2_y=density(y, bw = hpi_y) # Plug-in
+```
+
+We plot the estimators over the frequency histogram of variable y.
+
+```{r}
+hist(y,freq=FALSE,main='Density function estimators', xlab='') 
+lines(d1_y, col='blue', lwd= 2 )
+lines(d2_y, col = 'red',lwd= 2)
+legend("topright", legend = c("CV", "Plug-in"), col = c("blue","red"),lwd = 2)
+```
+
+We can see that both types of estimates give very similar results. Comparing it with the real frequency histogram, we confirm that it seems to be a good fit.
+
+::: callout-note
+## Exercise 3
+
+Repeat the two previous sections for x1 and x2.
+:::
+
+**x1**
+
+```{r}
+#x1
+hvc_x1=bw.ucv(x1) #  Cross-validation
+hvc_x1
+hpi_x1=bw.SJ(x1)  #  Plug-in
+hpi_x1
+```
+
+```{r}
+d1_x1=density(x1, bw = hvc_x1) # Cross-validation
+d2_x1=density(x1, bw = hpi_x1) # Plug-in
+
+hist(x1,freq=FALSE,main='Density function estimators', xlab='', ylim=c(0,0.03)) 
+lines(d1_x1, col='blue', lwd= 2 )
+lines(d2_x1, col = 'red',lwd= 2)
+legend("topright", legend = c("CV", "Plug-in"), col = c("blue","red"),lwd = 2)
+```
+
+Here we observe differences between the approximations. The LSCV estimate is rougher, with more folds, whereas the plug-in estimate is very smooth. This is because the plug-in bandwidth is noticeably larger than the LSCV one. This differs from the previous example, because in the previous exercise the bandwidths were very similar.
+
+**x2**
+
+```{r}
+#x2
+hvc_x2=bw.ucv(x2) #  Cross-validation
+hvc_x2
+hpi_x2=bw.SJ(x2)  #  Plug-in
+hpi_x2
+```
+
+```{r}
+d1_x2=density(x2, bw = hvc_x2) # Cross-validation
+d2_x2=density(x2, bw = hpi_x2) # Plug-in
+
+hist(x2,freq=FALSE,main='Density function estimators', xlab='', ylim=c(0,0.0008)) 
+lines(d1_x2, col='blue', lwd= 2 )
+lines(d2_x2, col = 'red',lwd= 2)
+legend("topright", legend = c("CV", "Plug-in"), col = c("blue","red"),lwd = 2)
+```
+
+In this graph we observe a behavior very similar to that of the first section.
+
+# Task 2
+
+::: callout-note
+## Exercise 4
+
+Estimate the joint density function of (y, x1) using a kernel estimator, with a Gaussian kernel and bandwidth calculated with the plug-in method. Write the bandwidth matrix and plot the obtained estimator.
+:::
+
+Careful!: We previously removed the `NA` elements from x1. Therefore, we must remove the corresponding ones from y.
+
+```{r}
+y_mask = y[!mask]
+
+length(x1)
+length(y_mask)
+```
+
+For the joint density function we will use the `ks` library.
+
+```{r,message=FALSE, warning=FALSE}
+library(ks)
+```
+
+We compute the bandwidth matrix.
+
+```{r}
+mat = cbind(x1,y_mask)
+Hp = Hpi(mat) 
+Hp
+```
+
+We express the joint density function using `kde`; if neither the bandwidth matrix nor the kernel are specified, it uses the plug-in method and the Gaussian kernel by default. We plot the contours.
+
+```{r}
+fhat.pi = kde(mat,H=Hp) 
+
+v= 1:9*10
+plot(fhat.pi, cont=v, lwd=3,ylim=c(0,55),xlim=c(0,250)) # add contours
+```
+
+We compare it with the distribution.
+
+```{r}
+plot(x1,y_mask, pch=8, cex=1.5,ylim=c(0,55),xlim=c(0,250))
+```
+
+We can see that they are very similar. It looks like a good estimate.
+
+```{r}
+# 3D representation
+ 
+z1 = fhat.pi$eval.points[[1]]
+
+z2 = fhat.pi$eval.points[[2]]
+
+z3 = fhat.pi$estimate
+
+layout(matrix(1:2, ncol=2))
+persp(z1,z2,z3,col='gold')
+persp(z1,z2,z3,col='gold',theta=45,phi=45) # Same plot but rotated
+layout(1) #so a single plot is shown again
+```
+
+::: callout-note
+## Exercise 5
+
+Give an estimate of the joint density function at (y, x1) = (20, 150).
+:::
+
+```{r}
+predict(fhat.pi,x=c(150,20))
+```
+
+::: callout-note
+## Exercise 6
+
+Repeat the two previous sections for (y, x2) and (y, x2) = (25, 3000).
+:::
+
+Note: in this case we use the original y variable.
+
+```{r}
+mat = cbind(x2, y)
+
+# Bandwidth
+Hp = Hpi(mat)
+Hp
+
+fhat.pi = kde(mat,H=Hp)
+ 
+v= 1:9*10
+plot(fhat.pi, cont=v, lwd=3)
+points(x2, y,pch=8, cex=0.3)
+```
+
+```{r}
+# 3D representation
+ 
+z1 = fhat.pi$eval.points[[1]]
+
+z2 = fhat.pi$eval.points[[2]]
+
+z3 = fhat.pi$estimate
+
+layout(matrix(1:2, ncol=2))
+persp(z1,z2,z3,col='gold')
+persp(z1,z2,z3,col='gold',theta=45,phi=45) # Same plot but rotated
+layout(1)
+```
+
+We compute the prediction of the joint density given the values stated in the problem.
+
+```{r}
+predict(fhat.pi,x=c(3000,25))
+```
+
+# Task 3
+
+::: callout-note
+## Exercise 7
+
+Estimate the regression curve of y on x1 using a local linear estimator (p = 1), with a Gaussian kernel, and bandwidth calculated with the following methods: cross-validation and plug-in.
+:::
+
+We use locpoly from the `KernSmooth` package, which uses the Gaussian kernel and the bandwidth obtained by the 'plug-in' method by default.
+
+```{r,message=FALSE, warning=FALSE}
+library(KernSmooth)
+```
+
+```{r}
+h_pi = dpill(x1,y_mask)
+h_pi #plug-in bandwidth
+
+m_pi = locpoly(x1, y_mask,bandwidth=h_pi)
+
+plot(x1, y_mask)
+lines(m_pi, col='red', lwd=2)
+```
+
+We use npregbw from the `np` package to compute the bandwidth via cross-validation.
+
+```{r,message=FALSE, warning=FALSE}
+library(np)
+```
+
+```{r}
+bw_vc = npregbw(y_mask~x1, regtype="ll") #the degree must be indicated
+h_vc = bw_vc$bw #cross-validation bandwidth
+
+m_vc = locpoly(x1,y_mask, bandwidth = h_vc)
+
+plot(x1, y_mask)
+lines(m_vc, col="blue", lwd=2,type="l")
+```
+
+Looking at the plots we can see that the first method (plug-in) has a larger bandwidth, drawing a smoother estimated density function than the second method (cross-validation), which again has a smaller bandwidth.
+
+::: callout-note
+## Exercise 8
+
+Compute the regression line and write its expression.
+:::
+
+```{r}
+lr = lm(y_mask~x1)
+lr
+
+plot(x1,y_mask)
+abline(lr, col="darkgreen", lwd=2)
+```
+
+Its expression would be:
+
+$y\_{mask} = 39.9359 - 0.1578 x_1$
+
+::: callout-note
+## Exercise 9
+
+Plot the three estimators on the same graph. Briefly comment on the result.
+:::
+
+```{r}
+plot(x1,y_mask,pch=20,cex=0.8)
+lines(m_vc,col="blue",lwd=2)
+lines(m_pi,col="red",lwd=2)
+abline(lr,col="darkgreen",lwd=2)
+legend("topright", legend = c("CV", "Plug-in","RL"), col = c("blue","red","darkgreen"),
+       lwd = 2)
+```
+
+Plug-in is again a smoother estimate than the CV estimate. In this case it would probably be a good idea to use the plug-in method because it seems to adapt better to the variance of the data.
+
+::: callout-note
+## Exercise 10
+
+Estimate the regression curve at x1 = 110 with the three estimators.
+:::
+
+The locpoly function does not have a predict function, so we have to use approx.
+
+```{r}
+pred_pi <- approx(x = m_pi$x,y = m_pi$y,
+                       xout = 110)$y
+pred_cv <- approx(x = m_vc$x,y = m_vc$y,
+                       xout = 110)$y
+pred_reg <- predict(lr,newdata=data.frame(x1=110))
+
+predictions <- c(pred_pi,pred_cv,pred_reg)
+names(predictions) <- c("Plug in","CrossValidation","RL")
+predictions
+```
+
+::: callout-note
+## Exercise 11
+
+Repeat the four previous sections for y on x2 and x2 = 3000.
+:::
+
+```{r}
+h_pi = dpill(x2,y)
+h_pi #plug-in bandwidth
+
+m_pi = locpoly(x2, y,bandwidth=h_pi)
+
+plot(x2, y)
+lines(m_pi, col='red', lwd=2)
+```
+
+```{r}
+bw_vc = npregbw(y~x2, regtype="ll") #the degree must be indicated
+h_vc = bw_vc$bw #cross-validation bandwidth
+
+m_vc = locpoly(x2,y, bandwidth = h_vc)
+
+plot(x2, y)
+lines(m_vc, col="blue", lwd=2)
+```
+
+```{r}
+lr = lm(y~x2)
+lr
+
+plot(x2, y)
+abline(lr, col="darkgreen", lwd=2)
+```
+Its expression would be:
+
+$y_{mask} = 46.317364 - 0.007677 x_2$
+
+```{r}
+plot(x2,y)
+lines(m_pi,col='blue',lwd=2)
+lines(m_vc,col='red',lwd=2)
+abline(lr,col='darkgreen',lwd=2)
+legend("topright", legend = c("CV", "Plug-in","RL"), col = c("red","blue","darkgreen"),
+       lwd = 2)
+```
+
+In this case we see that CV and plug-in found a similar bandwidth, resulting in very similar estimates.
+
+```{r}
+pred_pi <- approx(x = m_pi$x,y = m_pi$y,
+                       xout = 3000)$y
+pred_cv <- approx(x = m_vc$x,y = m_vc$y,
+                       xout = 3000)$y
+pred_reg <- predict(lr,newdata=data.frame(x2=3000))
+
+predictions <- c(pred_pi,pred_cv,pred_reg)
+names(predictions) <- c("Plug in","CrossValidation","RL")
+
+predictions
+```
+

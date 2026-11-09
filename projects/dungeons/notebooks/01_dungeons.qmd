@@ -1,0 +1,1129 @@
+---
+title: "DUNGEONS -- Predicting RPG Dungeon Difficulty"
+subtitle: "Machine Learning I & II -- Master in Data Science, University of Seville"
+author: "Miguel García Moreno"
+date: today
+format:
+  pdf:
+    toc: true
+    toc-depth: 3
+    number-sections: true
+    df-print: kable
+    fig-width: 7
+    fig-height: 4.5
+    fig-align: center
+    geometry: margin=2.5cm
+    output-file: dungeons.pdf
+execute:
+  echo: false
+  warning: false
+  message: false
+  cache: false
+knitr:
+  opts_chunk:
+    comment: "#>"
+---
+
+```{r setup}
+#| include: false
+
+# -----------------------------------------------------------------------------
+# GLOBAL SETUP
+# -----------------------------------------------------------------------------
+# Reproducibility: a single global seed is set here, and `set.seed(1234)` is
+# ALSO re-issued immediately before every individual random operation (splits,
+# model training, tuning, GA, resampling). Re-seeding locally guarantees each
+# chunk is reproducible on its own, regardless of execution order.
+set.seed(1234)
+
+# Load reusable helper functions (metrics, plotting, package loading).
+source("R/helpers.R")
+
+# All packages used across the report. `install_and_load()` installs anything
+# missing, so the document renders on a clean machine.
+required_packages <- c(
+  "tidyverse",     # data wrangling + ggplot2 (readr, dplyr, tibble, ggplot2)
+  "caret",         # partitioning, preprocessing, confusion matrices
+  "rpart",         # CART trees
+  "rpart.plot",    # tree visualisation
+  "randomForest",  # Random Forest
+  "nnet",          # single hidden-layer neural network / perceptron
+  "factoextra",    # PCA visualisations (scree plot, biplot)
+  "GA",            # genetic algorithm for feature selection
+  "e1071",         # SVM (radial kernel) + tuning
+  "pROC",          # ROC curve and AUC
+  "ROSE",          # class-balancing (synthetic resampling)
+  "knitr",         # tables via kable
+  "yardstick"      # macro F1
+  )
+install_and_load(required_packages)
+```
+
+\pagebreak
+# Introduction and AI-use declaration {.unnumbered}
+
+This report implements the full **DUNGEONS** assignment: predicting the ordinal
+difficulty `RANGO` of a fantasy dungeon-crawler level from the 3D positions and
+combat power of its five enemies, and later a binary "hard vs. not hard"
+(`DIFICIL`) classification.
+
+**Reproducibility.** The random seed `1234` is fixed globally and re-set before
+every random operation. Helper functions live in `R/helpers.R` to keep the
+report focused on methodology and interpretation.
+
+**How to render.** This is a Quarto document targeting PDF. It requires a
+working R installation, the packages listed in the setup chunk (installed
+automatically if missing) and a LaTeX engine (`tinytex::install_tinytex()` if
+you do not already have one). The data file `dungeons.csv` must be placed at
+`data/raw/dungeons.csv`.
+
+> **AI-usage declaration (required by the assignment protocol).**
+> A Large Language Model (Claude) was used as a support tool to help structure
+> the code and draft explanations. Representative prompts included:
+> *"Implement a modular R/Quarto ML report for the DUNGEONS dataset: CART,
+> Random Forest and nnet for the multiclass RANGO target; PCA; GA feature
+> selection; radial SVM for a DIFICIL binary target; detect the added data
+> problem; and a balanced re-classification with SVM and a simple perceptron."*
+> All AI-suggested code was reviewed, corrected and validated by the author, who
+> is solely responsible for the final results. Any statement that depends on
+> executing the code against the real `dungeons.csv` is left as an
+> interpretation comment in the code and must be confirmed against the rendered
+> output (these are marked `# FLAG:` where a human check is needed).
+
+\pagebreak
+# Data preparation
+## Loading and initial exploration
+
+```{r sec1-load}
+# Read the raw data from `data/raw/dungeons.csv`.
+# We keep the raw object separate from the cleaned one for traceability.
+dungeons_raw <- readr::read_csv("data/raw/dungeons.csv", show_col_types = FALSE)
+
+# Overall shape.
+dim(dungeons_raw)
+
+# Structure: variable names and their parsed types.
+str(dungeons_raw)
+```
+
+```{r sec1-summary}
+# Numeric distribution summary (min / quartiles / mean / max per column).
+summary(dungeons_raw)
+```
+
+```{r sec1-missing}
+# Missing-value audit: count NAs per column.
+colSums(is.na(dungeons_raw))
+```
+The initial exploratory analysis finds no missing values. The statistical summary also confirms that N_ENEMIES is a constant variable and that ID is a unique identifier.
+
+## Variable types and target encoding
+Some transformations are needed for correct variable typing. The target RANGO is encoded as an ordinal variable, making the order among categories explicit.
+```{r sec1-types}
+# `RANGO` is ORDINAL, so we encode it as an *ordered* factor. The ordering is
+# essential for Section 5, where "difficult" is defined as RANGO > "Platino":
+# an ordered factor lets us use the natural `>` comparison directly.
+rango_levels <- c("Bronce", "Plata", "Oro", "Platino", "Diamante", "Maestro")
+
+dungeons <- dungeons_raw %>%
+  dplyr::mutate(RANGO = factor(RANGO, levels = rango_levels, ordered = TRUE))
+
+# Sanity check: any RANGO value not in `rango_levels` becomes NA here. If the
+# count below is > 0, the level vector above must be corrected to match the data.
+n_unmapped <- sum(is.na(dungeons$RANGO)) - sum(is.na(dungeons_raw$RANGO))
+cat("RANGO values not matching the expected levels:", n_unmapped, "\n")
+
+# Class distribution of the target (drives the modelling and Section 7).
+table(dungeons$RANGO)
+```
+
+The target distribution is right-skewed.
+
+## Predictor selection
+
+```{r sec1-predictors}
+# Predictors are every column EXCEPT the identifier, the constant, and the target.
+#  - ID:        a unique key; using it as a predictor would just memorise rows.
+#  - N_ENEMIES: documented as constant (= 5); a zero-variance column carries no
+#               information and can break some algorithms. We exclude it from
+#               modelling here and DETECT it formally in Section 7.
+#  - RANGO:     the target itself.
+non_predictors <- c("ID", "N_ENEMIES", "RANGO")
+predictor_vars <- setdiff(names(dungeons), non_predictors)
+predictor_vars
+```
+
+## Train / test split (75 % / 25 %)
+To obtain adequate measures of generalisation ability later, a stratified sample is used for the train and test sets.
+```{r sec1-split}
+set.seed(1234)
+train_idx  <- caret::createDataPartition(dungeons$RANGO, p = 0.75, list = FALSE)
+train_data <- dungeons[train_idx, ]
+test_data  <- dungeons[-train_idx, ]
+
+# Verify the split preserved the class proportions.
+rbind(
+  train = round(prop.table(table(train_data$RANGO)), 3),
+  test  = round(prop.table(table(test_data$RANGO)), 3)
+)
+```
+
+## Scaling (for distance/gradient-based models)
+For algorithms sensitive to scale, transformed train and test sets are built via standardisation. The same mean and variance used on the training set are applied to the test set. As a note, if the model is later put into production, new data must also be standardised with the same parameters used to build the training and test sets.
+```{r sec1-scale}
+pre_proc <- caret::preProcess(
+  train_data[, predictor_vars],
+  method = c("center", "scale")
+)
+
+# `scale_with_reference()` (see R/helpers.R) applies the fitted scaler and
+# re-attaches the target, keeping the leakage-free pattern in one place.
+train_scaled <- scale_with_reference(pre_proc, train_data, predictor_vars, target = "RANGO")
+test_scaled  <- scale_with_reference(pre_proc, test_data,  predictor_vars, target = "RANGO")
+
+# Quick check: training predictors should now have mean ~0 and sd ~1.
+round(sapply(train_scaled[, predictor_vars], function(x) c(mean = mean(x), sd = sd(x)))[, 1:3], 3)
+```
+
+\pagebreak
+# CART, Random Forest, and Neural Network
+
+Three classical models are fitted; first, a classification tree.
+
+```{r sec2-formula}
+# Model formula reused by CART and the Random Forest: predict RANGO from the
+# selected predictors only (ID and N_ENEMIES are excluded).
+predictor_vars_formatted <- paste0("`", predictor_vars, "`")
+model_formula <- reformulate(predictor_vars_formatted, response = "RANGO")
+model_formula
+```
+
+## CART
+
+To prune the tree later, the full tree is grown first, achieving absolute purity. This tree is clearly overfit to the training set and has poor generalisation ability.
+
+```{r sec2-cart-full}
+set.seed(1234)
+cart_full <- rpart::rpart(
+  model_formula,
+  data    = train_data,
+  method  = "class",
+  control = rpart::rpart.control(cp = 0, minsplit = 2, minbucket = 1, xval = 10)
+)
+
+# Complexity table: error vs. tree size for each cp value considered.
+printcp(cart_full)
+```
+The fitted tree is shown below.
+```{r sec2-cart-full-plot}
+#| fig-cap: "Fully grown CART tree (cp = 0). Expected to be large and overfit."
+rpart.plot::rpart.plot(
+  cart_full, type = 2, extra = 104, box.palette = "Blues",
+  fallen.leaves = TRUE, tweak = 0.9,
+  main = "Full tree (cp = 0)"
+)
+```
+The tree is then pruned with the criterion set in the assignment.
+```{r sec2-cart-prune}
+# Prune at the fixed complexity parameter required by the assignment.
+cart_pruned <- rpart::prune(cart_full, cp = 0.05)
+```
+
+
+```{r sec2-cart-prune-plot}
+#| fig-cap: "Pruned CART tree (cp = 0.05): smaller, more interpretable, less overfit."
+rpart.plot::rpart.plot(
+  cart_pruned, type = 2, extra = 104, box.palette = "Blues",
+  fallen.leaves = TRUE, tweak = 1.1,
+  main = "Pruned tree (cp = 0.05)"
+)
+```
+This tree is the best possible that still meets the cp=0.05 criterion, because it comes from pruning the full tree (impurity = 0). Being very small, no further criteria are needed, as they would shrink an already compact tree. It also offers greater interpretability by simplifying the dichotomous logic of the first tree. This is the tree chosen by the author.
+
+
+```{r sec2-cart-eval}
+# Predict on the test set and build the confusion matrix. We coerce both the
+# predictions and the truth to *unordered* factors with identical levels so that
+# caret computes per-class metrics without ordered-factor complications.
+cart_pred <- predict(cart_pruned, newdata = test_data, type = "class")
+cart_cm <- caret::confusionMatrix(
+  data      = factor(cart_pred,        levels = rango_levels),
+  reference = factor(test_data$RANGO,  levels = rango_levels)
+)
+#cart_cm$table            # shown afterwards
+cart_metrics <- multiclass_metrics(cart_cm, "CART (pruned)")
+knitr::kable(cart_metrics, digits = 3, caption = "CART test-set metrics")
+```
+
+Because the set is unbalanced, balanced accuracy matters more than overall accuracy. Here it is 65%, so further improvement is needed. Precision and recall are both low: among observations assigned to a given class the mean error rate is 0.301, and only 0.42 of the test data are classified into their true category.
+
+```{r sec2-cart-cm-plot}
+#| fig-cap: "CART confusion matrix on the test set."
+plot_confusion(cart_cm, title = "CART (pruned) -- test confusion matrix")
+```
+A dense diagonal indicates some learning. Notably, no Plata case is classified correctly—this is the tree's main problem and the primary cause of its low performance. Looking back at the "Pruned tree" figure explains this: no terminal node predicts Plata or Maestro.
+
+## Random Forest
+The next model is Random Forest, fitted according to the assignment instructions. Tuning mtry specifically aims to improve predictive ability by forcing each tree to use at most mtry predictors.
+
+```{r sec2-rf-tune}
+#| cache: true
+# Search mtry over a grid and record the final OOB error for each value.
+# Re-seed inside the loop so each forest is reproducible and the comparison
+# isolates the effect of mtry alone.
+x_train <- train_data[, predictor_vars, drop = FALSE]
+y_train <- train_data$RANGO
+
+set.seed(1234)
+
+p <- ncol(x_train)
+
+mtry_values <- unique(round(seq(1, p, length.out = 10)))
+ntree_values <- c(50,100,250, 500, 750, 1000)
+
+grid <- expand.grid(
+  mtry = mtry_values,
+  ntree = ntree_values
+)
+
+rf_grid_results <- lapply(seq_len(nrow(grid)), function(i) {
+  
+  m <- grid$mtry[i]
+  n <- grid$ntree[i]
+  
+  rf <- randomForest::randomForest(
+    x = x_train,
+    y = y_train,
+    mtry = m,
+    ntree = n
+  )
+  
+  data.frame(
+    mtry = m,
+    ntree = n,
+    oob_error = rf$err.rate[rf$ntree, "OOB"]
+  )
+})
+
+rf_grid_results <- bind_rows(rf_grid_results)
+
+rf_grid_results <- rf_grid_results %>%
+  arrange(oob_error)
+
+# Best combination of hyperparameters
+best_params <- rf_grid_results[1, ]
+best_mtry <- best_params$mtry
+best_ntree <- best_params$ntree
+
+cat("Best Random Forest hyperparameters:\n")
+cat("  mtry      :", best_params$mtry, "\n")
+cat("  ntree     :", best_params$ntree, "\n")
+cat("  OOB Error :", round(best_params$oob_error, 4), "\n")
+```
+After the grid search for the best hyperparameters, the model is fitted with them. The forest will use 5 variables in each tree. Because OOB data were used to select the best model, it still makes sense to use the test set to evaluate generalisation ability, as those observations remain unseen. The grid search is visualised below.
+
+```{r}
+ggplot2::ggplot(
+  rf_grid_results,
+  ggplot2::aes(
+    x = mtry,
+    y = oob_error,
+    colour = factor(ntree),
+    group = ntree
+  )
+) +
+  ggplot2::geom_line() +
+  ggplot2::geom_point(size = 2) +
+  ggplot2::geom_point(
+    data = best_params,
+    colour = "red",
+    size = 4
+  ) +
+  ggplot2::labs(
+    title = "Random Forest hyperparameter tuning",
+    x = "mtry",
+    y = "OOB error",
+    colour = "ntree"
+  ) +
+  theme_dungeons()
+```
+
+
+```{r sec2-rf-final}
+# Train the final forest with the best mtry. importance = TRUE stores both
+# importance measures (accuracy- and Gini-based).
+set.seed(1234)
+rf_final <- randomForest::randomForest(
+  x = x_train,
+  y = y_train,
+  mtry = best_mtry, ntree = best_ntree, importance = TRUE
+)
+rf_final                               # prints OOB error + training confusion matrix
+oob_final <- rf_final$err.rate[rf_final$ntree, "OOB"]
+cat("Final OOB error estimate:", round(oob_final, 4), "\n")
+```
+The OOB error may look somewhat high, but true predictive ability will be checked later via the test-set confusion matrix.
+
+```{r sec2-rf-importance}
+#| fig-cap: "Variable importance (mean decrease in Gini impurity)."
+# Tidy the Gini-based importance and plot it, most important at the top.
+imp_df <- as.data.frame(randomForest::importance(rf_final))
+imp_df$Variable <- rownames(imp_df)
+
+ggplot2::ggplot(
+  imp_df,
+  ggplot2::aes(x = reorder(Variable, MeanDecreaseGini), y = MeanDecreaseGini)
+) +
+  ggplot2::geom_col(fill = "#2C3E9E") +
+  ggplot2::coord_flip() +
+  ggplot2::labs(title = "Random Forest variable importance",
+                x = NULL, y = "Mean decrease in Gini") +
+  theme_dungeons()
+```
+The variables that discriminate best in the random forest model can be seen above.
+
+```{r sec2-rf-eval}
+# Evaluate on the test set.
+rf_pred <- predict(rf_final, newdata = test_data)
+rf_cm <- caret::confusionMatrix(
+  data      = factor(rf_pred,          levels = rango_levels),
+  reference = factor(test_data$RANGO,  levels = rango_levels)
+)
+#rf_cm$table #shown later
+rf_metrics <- multiclass_metrics(rf_cm, "Random Forest")
+knitr::kable(rf_metrics, digits = 3, caption = "Random Forest test-set metrics")
+```
+The metrics indicate a considerable improvement over CART.
+
+```{r}
+#| fig-cap: "Random forest confusion matrix on the test set."
+plot_confusion(rf_cm, title = "Random forest -- test confusion matrix")
+```
+The Random Forest shows solid learning; notably, Plata and Maestro are now classified. Better results than CART were expected, since the forest builds many trees and votes on each prediction. It is therefore much more robust, at the cost of interpretability.
+
+## Neural network (one hidden layer, `nnet`)
+Because neural networks are sensitive to scale, the scaled data set is used.
+
+```{r sec2-nn-data}
+# nnet expects an (unordered) factor outcome. We keep the same level order but
+# drop the "ordered" attribute to avoid ordered-factor contrasts in modelling.
+train_nn <- train_scaled
+test_nn  <- test_scaled
+train_nn$RANGO <- factor(train_nn$RANGO, levels = rango_levels)
+test_nn$RANGO  <- factor(test_nn$RANGO,  levels = rango_levels)
+```
+
+
+```{r sec2-nn-tune}
+#| cache: true
+# Search hidden size 5..8 with fixed decay = 0.01, selecting by 5-fold CV
+# accuracy. caret handles the CV, the class indicator coding and prediction.
+#  - maxit:    optimisation iterations (raised so training converges).
+#  - trace = FALSE keeps the report output clean.
+set.seed(1234)
+nn_grid <- expand.grid(size = 5:8, decay = 0.01)
+nn_ctrl <- caret::trainControl(method = "cv", number = 5)
+
+nn_tuned <- caret::train(
+  RANGO ~ ., data = train_nn,
+  method    = "nnet",
+  tuneGrid  = nn_grid,
+  trControl = nn_ctrl,
+  trace = FALSE, maxit = 500
+)
+
+best_nn_size <- nn_tuned$bestTune$size
+nn_decay     <- nn_tuned$bestTune$decay
+cat("Selected hidden-layer size:", best_nn_size, "| decay:", nn_decay, "\n")
+knitr::kable(nn_tuned$results[, c("size", "decay", "Accuracy", "Kappa")],
+             digits = 3, caption = "Neural-network CV accuracy by hidden size")
+```
+Based on the grid search, the best parameters are selected and the model is built with them.
+
+```{r sec2-nn-eval}
+# Evaluate the selected network on the test set.
+nn_pred <- predict(nn_tuned, newdata = test_nn)
+nn_cm <- caret::confusionMatrix(
+  data      = factor(nn_pred,       levels = rango_levels),
+  reference = factor(test_nn$RANGO, levels = rango_levels)
+)
+nn_metrics <- multiclass_metrics(nn_cm, "Neural Network")
+knitr::kable(nn_metrics, digits = 3, caption = "Neural-network test-set metrics")
+```
+Again the neural network outperforms CART, the first model considered.
+
+```{r}
+plot_confusion(nn_cm,title ="NN -- test confusion matrix")
+```
+Predictions appear in every category, and second-order mistakes (labels two ranks away) appear that were rare in the earlier models (CART has only one). The largest errors seem to occur at the highest levels—Maestro, Diamante and Platino. This small network has learned general patterns but still makes several mistakes; more neurons or a different decay might help.
+
+## Model comparison
+
+```{r sec2-comparison}
+# Row-bind the three metric tables into a single comparison. Using the shared
+# helper guarantees identical definitions across models (a fair comparison).
+model_comparison <- rbind(cart_metrics, rf_metrics, nn_metrics)
+knitr::kable(model_comparison, digits = 3,
+             caption = "Multiclass model comparison on the test set")
+```
+
+```{r sec2-comparison-plot}
+#| fig-cap: "Test-set metric comparison across the three models."
+model_comparison %>%
+  tidyr::pivot_longer(-Model, names_to = "Metric", values_to = "Value") %>%
+  ggplot2::ggplot(ggplot2::aes(Metric, Value, fill = Model)) +
+  ggplot2::geom_col(position = "dodge") +
+  ggplot2::coord_cartesian(ylim = c(0, 1)) +
+  ggplot2::labs(title = "Model comparison", x = NULL, y = NULL) +
+  theme_dungeons() +
+  ggplot2::theme(axis.text.x = ggplot2::element_text(angle = 30, hjust = 1))
+```
+
+Random Forest obtains the best results on every metric and would therefore be the chosen model, followed by the neural network and then CART, which is the most interpretable despite weaker results. Even so, choosing Random Forest is still somewhat premature: none of its metrics exceeds 0.8. Next steps would include a larger sample to give the forest more information, or more complex neural networks (which need more data).
+
+
+\pagebreak
+# Principal Component Analysis (PCA)
+
+Scaled data are used for this method. PCA supports feature selection, because loadings on the principal components reveal which variables matter most. It is also a dimensionality-reduction method via orthogonal projections, used for example in LLM embeddings.
+```{r sec3-fit}
+# PCA on the explanatory variables only (exclude ID, N_ENEMIES, RANGO).
+pca_input <- dungeons[, predictor_vars]
+pca <- prcomp(pca_input, center = TRUE, scale. = TRUE)
+```
+
+## Explained variance
+
+```{r sec3-variance}
+# Build a tidy explained-variance table from the eigenvalues (sdev^2).
+eigenvalues     <- pca$sdev^2
+prop_variance   <- eigenvalues / sum(eigenvalues)
+cumulative_var  <- cumsum(prop_variance)
+
+pca_variance <- data.frame(
+  PC             = paste0("PC", seq_along(eigenvalues)),
+  Eigenvalue     = round(eigenvalues, 3),
+  Prop_Variance  = round(prop_variance, 3),
+  Cumulative     = round(cumulative_var, 3)
+)
+knitr::kable(pca_variance, caption = "PCA explained variance by component")
+```
+
+```{r sec3-scree}
+#| fig-cap: "Scree plot: percentage of variance explained by each component."
+factoextra::fviz_eig(pca, addlabels = TRUE, barfill = "#2C3E9E",
+                     barcolor = "#2C3E9E") +
+  ggplot2::labs(title = "Scree plot") +
+  theme_dungeons()
+```
+For this sample, the variance explained by the principal components is modest. Ten components would be needed to explain 75% of the variance. The most influential variables on the first four components are examined next.
+
+## Variable loadings
+
+```{r sec3-loadings}
+# Loadings = how each original variable contributes to each component.
+# We show the first four components for readability.
+n_show <- min(4, ncol(pca$rotation))
+loadings_tbl <- round(pca$rotation[, seq_len(n_show)], 3)
+knitr::kable(loadings_tbl, caption = "Variable loadings (first components)")
+```
+On PC1, (1_PODER, 2_PODER, …, 5_PODER) are highly influential, approaching 0.5; the rest are not noteworthy. On PC2, 5_X, 4_Z and 2_X matter more. A similar reading applies to the remaining components. Still, the loadings are not very strong: no variable even exceeds the 0.5 threshold.
+
+
+## Biplot
+
+```{r sec3-biplot}
+#| fig-cap: "PCA biplot on the first two components, coloured by difficulty rank."
+factoextra::fviz_pca_biplot(
+  pca, axes = c(1, 2),
+  geom.ind = "point", pointshape = 21, pointsize = 1.5,
+  fill.ind = dungeons$RANGO, col.ind = "grey30",
+  alpha.ind = 0.5,
+  col.var = "black", repel = TRUE,
+  legend.title = "RANGO"
+) +
+  ggplot2::labs(title = "PCA biplot (PC1 vs PC2)") +
+  theme_dungeons()
+```
+The earlier interpretation of the loadings can now be seen in the plot. The (1_PODER, …, 5_PODER) variables are the most influential, reflected in vector length. The previous feature-importance plot also highlighted these as the most relevant variables. With the first two components the categories separate to some extent into regions of the 2D space. That segmentation would be clearer if cumulative variance were higher; here it is only 29%.
+
+
+\pagebreak
+# Genetic Algorithm for Feature Selection
+
+Given the sample imbalance, an objective that accounts for different error types is appropriate; hence macro F1 is chosen.
+
+```{r sec4-setup}
+# Carve a validation split out of the (scaled, unordered-target) training data.
+# The test set is never touched during feature selection.
+set.seed(1234)
+ga_val_idx  <- caret::createDataPartition(train_nn$RANGO, p = 0.7, list = FALSE)
+ga_subtrain <- train_nn[ga_val_idx, ]
+ga_valid    <- train_nn[-ga_val_idx, ]
+
+# Fitness using macro F1
+nn_fitness <- function(chromosome) {
+  selected <- predictor_vars[chromosome == 1]
+
+  # Forbid empty subset
+  if (length(selected) == 0) return(0)
+
+  # Protect non-standard column names like 1_X, 2_Y, etc.
+  selected_safe <- paste0("`", selected, "`")
+
+  form <- as.formula(
+    paste("RANGO ~", paste(selected_safe, collapse = " + "))
+  )
+
+  set.seed(1234)
+
+  model <- nnet::nnet(
+    form,
+    data = ga_subtrain,
+    size = best_nn_size,
+    decay = 0.01,
+    maxit = 200,
+    trace = FALSE,
+    MaxNWts = 5000
+  )
+
+  preds <- predict(
+    model,
+    newdata = ga_valid,
+    type = "class"
+  )
+
+  results <- data.frame(
+    truth = ga_valid$RANGO,
+    estimate = factor(preds, levels = levels(ga_valid$RANGO))
+  )
+
+  yardstick::f_meas(
+    results,
+    truth = truth,
+    estimate = estimate,
+    estimator = "macro"
+  )$.estimate
+}
+```
+
+```{r sec4-run}
+#| cache: true
+# Run the GA with the required hyperparameters. `seed` inside ga() makes the
+# stochastic search reproducible.
+ga_gene_names <- make.names(predictor_vars, unique = TRUE)
+
+ga_res <- GA::ga(
+  type       = "binary",
+  fitness    = nn_fitness,
+  nBits      = length(predictor_vars),
+  names      = ga_gene_names,
+  popSize    = 30,
+  maxiter    = 40,
+  pmutation  = 0.10,
+  pcrossover = 0.80,
+  seed       = 1234
+)
+```
+
+```{r sec4-results}
+# Best chromosome (take the first row if several optima tie).
+best_chromosome <- ga_res@solution[1, ]
+selected_vars   <- predictor_vars[best_chromosome == 1]
+best_fitness    <- ga_res@fitnessValue
+
+cat("Best fitness (macro F1):", round(best_fitness, 4), "\n")
+cat("Number of variables selected:", length(selected_vars), "of",
+    length(predictor_vars), "\n\n")
+cat("Selected variables:\n"); print(selected_vars)
+
+# Show the best chromosome as a 0/1 vector aligned with variable names.
+knitr::kable(
+  data.frame(Variable = predictor_vars, Selected = as.integer(best_chromosome)),
+  caption = "Best chromosome (1 = variable selected)"
+)
+```
+
+```{r sec4-evolution}
+#| fig-cap: "GA fitness evolution across generations (best and mean)."
+plot(ga_res)
+```
+
+The quality of this feature set will be checked by retraining the network.
+
+```{r}
+set.seed(1234)
+
+nn_subset_train <- train_nn[, c("RANGO", selected_vars)]
+nn_subset_test  <- test_nn[,  c("RANGO", selected_vars)]
+
+nn_grid <- expand.grid(
+  size = 7,
+  decay = 0.01
+)
+
+nn_ctrl <- caret::trainControl(
+  method = "cv",
+  number = 5
+)
+
+nn_tuned <- caret::train(
+  RANGO ~ .,
+  data = nn_subset_train,
+  method = "nnet",
+  tuneGrid = nn_grid,
+  trControl = nn_ctrl,
+  trace = FALSE,
+  maxit = 500
+)
+
+nn_pred <- predict(nn_tuned, newdata = nn_subset_test)
+
+nn_cm <- caret::confusionMatrix(
+  data = factor(nn_pred, levels = rango_levels),
+  reference = factor(nn_subset_test$RANGO, levels = rango_levels)
+)
+
+nn_metrics <- multiclass_metrics(nn_cm, "Neural Network - GA subset")
+knitr::kable(nn_metrics, digits = 3, caption = "Neural-network test-set metrics")
+```
+Compared with the earlier results, slight metric improvements are visible.
+
+\pagebreak
+# Dichotomous variable `DIFICIL`
+Using the ordinal structure given to the target at the start, the dichotomous variable DIFICIL can now be built relatively easily.
+
+```{r sec5-create}
+# Create DIFICIL on the full dataset, then re-derive train/test binary sets
+# using the SAME split indices (train_idx) so results stay comparable across
+# sections. Positive class = "Dificil".
+dungeons <- dungeons %>%
+  dplyr::mutate(
+    DIFICIL = factor(RANGO > "Platino",
+                     levels = c(FALSE, TRUE),
+                     labels = c("No_Dificil", "Dificil"))
+  )
+
+# Cross-check the mapping: which ranks became "Dificil"?
+table(RANGO = dungeons$RANGO, DIFICIL = dungeons$DIFICIL)
+```
+
+```{r sec5-partition}
+# Binary train/test sets (raw), aligned with the Section-1 partition.
+train_bin <- dungeons[train_idx, ]
+test_bin  <- dungeons[-train_idx, ]
+
+# Standardised binary sets for the SVM / perceptron (scaler fitted on Section-1
+# training predictors; DIFICIL re-attached as the target).
+train_bin_scaled <- scale_with_reference(pre_proc, train_bin, predictor_vars, target = "DIFICIL")
+test_bin_scaled  <- scale_with_reference(pre_proc, test_bin,  predictor_vars, target = "DIFICIL")
+```
+
+## Class distribution
+
+```{r sec5-distribution}
+# Absolute counts and proportions of the binary target.
+dificil_counts <- table(dungeons$DIFICIL)
+dificil_props  <- round(prop.table(dificil_counts), 3)
+knitr::kable(
+  data.frame(Class = names(dificil_counts),
+             Count = as.integer(dificil_counts),
+             Proportion = as.numeric(dificil_props)),
+  caption = "DIFICIL class distribution"
+)
+```
+
+```{r sec5-distribution-plot}
+#| fig-cap: "Class distribution of the binary target DIFICIL."
+ggplot2::ggplot(dungeons, ggplot2::aes(x = DIFICIL, fill = DIFICIL)) +
+  ggplot2::geom_bar() +
+  ggplot2::geom_text(stat = "count",
+                     ggplot2::aes(label = after_stat(count)), vjust = -0.3) +
+  ggplot2::scale_fill_manual(values = c(No_Dificil = "#7FB3D5", Dificil = "#C0392B")) +
+  ggplot2::labs(title = "DIFICIL class distribution", x = NULL, y = "Count") +
+  theme_dungeons() +
+  ggplot2::theme(legend.position = "none")
+```
+An uneven distribution of the DIFICIL variable is visible.
+
+\pagebreak
+# Radial SVM for `DIFICIL`
+A cross-validation procedure is used to find the best parameters for the radial SVM.
+
+```{r sec6-tune}
+#| cache: true
+# Grid search over the required cost/gamma values with 10-fold CV.
+# probability = TRUE is forwarded to svm() so we can later extract class
+# probabilities for the ROC curve.
+set.seed(1234)
+svm_tune <- e1071::tune.svm(
+  DIFICIL ~ ., data = train_bin_scaled,
+  kernel = "radial",
+  cost   = c(0.1, 1, 10, 100),
+  gamma  = c(0.001, 0.01, 0.1, 1),
+  tunecontrol = e1071::tune.control(sampling = "cross", cross = 10),
+  probability = TRUE
+)
+
+svm_best_cost  <- svm_tune$best.parameters$cost
+svm_best_gamma <- svm_tune$best.parameters$gamma
+cat("Best cost:", svm_best_cost, "| Best gamma:", svm_best_gamma, "\n")
+```
+The best parameters yield a small margin and few support vectors; the model will have stiff/global margins and little error tolerance given the high cost.
+```{r sec6-grid-plot}
+#| fig-cap: "Cross-validation error across the cost/gamma grid."
+# tune.svm stores per-combination CV error in $performances.
+ggplot2::ggplot(svm_tune$performances,
+                ggplot2::aes(x = factor(cost), y = factor(gamma), fill = error)) +
+  ggplot2::geom_tile(colour = "white") +
+  ggplot2::geom_text(ggplot2::aes(label = round(error, 3)), size = 3) +
+  ggplot2::scale_fill_gradient(low = "#E8F6EF", high = "#C0392B") +
+  ggplot2::labs(title = "SVM grid search (CV error)",
+                x = "cost", y = "gamma", fill = "CV error") +
+  theme_dungeons()
+```
+
+```{r sec6-eval}
+# Evaluate the best model on the test set. positive = "Dificil" so the metrics
+# (precision/recall/F1) are computed for the class we care about.
+svm_best <- svm_tune$best.model
+svm_pred <- predict(svm_best, newdata = test_bin_scaled, probability = TRUE)
+
+svm_cm <- caret::confusionMatrix(
+  data      = svm_pred,
+  reference = test_bin_scaled$DIFICIL,
+  positive  = "Dificil"
+)
+svm_metrics <- binary_metrics(svm_cm, "Radial SVM (unbalanced)")
+knitr::kable(svm_metrics, digits = 3, caption = "Radial SVM test-set metrics")
+```
+```{r sec6-confusion-matrix}
+plot_confusion(svm_cm,title ="SVM -- test confusion matrix")
+```
+Classification looks good: both the confusion matrix and the metrics are strong. Recall could still improve—i.e. how many "Dificil" observations are labelled "Dificil".
+```{r sec6-roc}
+#| fig-cap: "ROC curve for the radial SVM on the test set."
+# Probability of the positive class, then ROC / AUC via pROC.
+svm_prob <- attr(svm_pred, "probabilities")[, "Dificil"]
+svm_roc  <- pROC::roc(response  = test_bin_scaled$DIFICIL,
+                      predictor = svm_prob,
+                      levels    = c("No_Dificil", "Dificil"))
+svm_auc  <- as.numeric(pROC::auc(svm_roc))
+
+pROC::ggroc(svm_roc, colour = "#2C3E9E", size = 1) +
+  ggplot2::geom_abline(intercept = 1, slope = 1, linetype = "dashed",
+                       colour = "grey50") +
+  ggplot2::annotate("text", x = 0.25, y = 0.1,
+                    label = paste0("AUC = ", round(svm_auc, 3))) +
+  ggplot2::labs(title = "Radial SVM ROC curve") +
+  theme_dungeons()
+```
+The ROC curve suggests that a better classification threshold is possible. That will be one of the techniques applied in Section 8.
+
+# The Added Problem
+Several possible problems that arise when classifying "Dificil" are examined here.
+
+## Diagnosis 1 -- Zero / near-zero variance
+
+```{r sec7-nzv}
+# Include N_ENEMIES here specifically to test the documented "constant" column.
+nzv <- caret::nearZeroVar(dungeons[, c("N_ENEMIES", predictor_vars)],
+                          saveMetrics = TRUE)
+knitr::kable(nzv, digits = 3,
+             caption = "Near-zero-variance diagnostics (zeroVar / nzv = TRUE is a problem)")
+```
+
+The only variable with zero variance is N_ENEMIES, which is constant and was already removed from the modelling set.
+
+## Diagnosis 2 -- Multicollinearity
+
+```{r sec7-corr}
+# Correlation matrix among the numeric predictors.
+cor_mat <- cor(dungeons[, predictor_vars])
+
+# Pairs above a high threshold (potential redundancy / multicollinearity).
+high_corr <- caret::findCorrelation(cor_mat, cutoff = 0.8, names = TRUE)
+cat("Predictors flagged as highly correlated (|r| > 0.8):\n")
+if (length(high_corr) == 0) cat("  none\n") else print(high_corr)
+```
+
+```{r sec7-corr-plot}
+#| fig-cap: "Correlation heat map of the predictors."
+cor_long <- as.data.frame(as.table(cor_mat))
+ggplot2::ggplot(cor_long, ggplot2::aes(Var1, Var2, fill = Freq)) +
+  ggplot2::geom_tile() +
+  ggplot2::scale_fill_gradient2(low = "#2C3E9E", mid = "white", high = "#C0392B",
+                                midpoint = 0, limits = c(-1, 1), name = "r") +
+  ggplot2::labs(title = "Predictor correlation matrix", x = NULL, y = NULL) +
+  theme_dungeons() +
+  ggplot2::theme(axis.text.x = ggplot2::element_text(angle = 90, hjust = 1, size = 6),
+                 axis.text.y = ggplot2::element_text(size = 6))
+```
+
+Multicollinearity can also hinder model training: redundant information can harm the coefficients associated with these variables.
+
+## Diagnosis 3 -- Class imbalance
+
+```{r sec7-imbalance}
+# Imbalance for the binary target created in Section 5.
+imbalance_ratio <- max(dificil_counts) / min(dificil_counts)
+cat("DIFICIL class counts:\n"); print(dificil_counts)
+cat(sprintf("Imbalance ratio (majority : minority) = %.2f : 1\n", imbalance_ratio))
+
+# Multiclass target for reference.
+cat("\nRANGO class counts:\n"); print(table(dungeons$RANGO))
+```
+
+As seen earlier, the "Dificil" class is unbalanced, so it should be addressed before modelling—via resampling, suitable generalisation metrics, or both.
+
+## Conclusion
+Among the problems studied, two may be hindering good model fit: multicollinearity and imbalance in the binary response. For the first, it is enough to drop all but one of the highly collinear variables. For imbalance, several approaches exist:
+
+- Resampling, either oversampling the minority class or undersampling the majority class.
+- Using weighted algorithms that redefine the importance of classes during training.
+- Adjusting the classification threshold.
+
+\pagebreak
+# Balanced Classification
+Of the two problems found, class imbalance is addressed first as the more relevant. ROSE resampling is used to balance the sample, and the decision threshold will also be adjusted later.
+
+```{r}
+train_bin_scaled_rose <- train_bin_scaled
+
+names(train_bin_scaled_rose) <- make.names(
+  names(train_bin_scaled_rose),
+  unique = TRUE
+)
+
+train_bin_scaled_rose$DIFICIL <- factor(
+  train_bin_scaled_rose$DIFICIL,
+  levels = c("No_Dificil", "Dificil")
+)
+
+
+test_bin_scaled_rose <- test_bin_scaled
+
+names(test_bin_scaled_rose) <- make.names(
+  names(test_bin_scaled_rose),
+  unique = TRUE
+)
+
+test_bin_scaled_rose$DIFICIL <- factor(
+  test_bin_scaled_rose$DIFICIL,
+  levels = c("No_Dificil", "Dificil")
+)
+
+set.seed(1234)
+
+balanced_train <- ROSE::ROSE(
+  DIFICIL ~ .,
+  data = train_bin_scaled_rose,
+  seed = 1234
+)$data
+
+# Confirm the classes are now roughly balanced.
+cat("Before balancing:\n")
+print(table(train_bin_scaled$DIFICIL))
+
+cat("After balancing (ROSE):\n")
+print(table(balanced_train$DIFICIL))
+```
+
+## Balanced SVM
+The SVM is retrained on the balanced sample.
+```{r}
+set.seed(1234)
+svm_balanced_tune <- e1071::tune.svm(
+  DIFICIL ~ ., data = balanced_train,
+  kernel = "radial",
+  cost   = c(0.1, 1, 10, 100),
+  gamma  = c(0.001, 0.01, 0.1, 1),
+  tunecontrol = e1071::tune.control(sampling = "cross", cross = 10),
+  probability = TRUE
+)
+
+svm_balanced_best_cost  <- svm_balanced_tune$best.parameters$cost
+svm_balanced_best_gamma <- svm_balanced_tune$best.parameters$gamma
+cat("Best cost:", svm_balanced_best_cost, "| Best gamma:", svm_balanced_best_gamma, "\n")
+```
+The hyperparameters changed substantially and are now less extreme, balancing flexibility and error tolerance. Given the small sample, the optimal threshold is computed on the training set so as not to break the required 75%–25% held-out protocol.
+```{r sec8-svm}
+set.seed(1234)
+svm_balanced <- e1071::svm(
+  DIFICIL ~ ., data = balanced_train, 
+  kernel = "radial",
+  cost = svm_balanced_best_cost, 
+  gamma = svm_balanced_best_gamma, 
+  probability = TRUE
+)
+
+svm_bal_pred <- predict(svm_balanced, newdata = balanced_train ,probability = TRUE)
+
+svm_bal_prob<- attr(svm_bal_pred,"probabilities")[, "Dificil"]
+
+svm_bal_roc<- pROC::roc(
+  response  =balanced_train$DIFICIL,
+  predictor =svm_bal_prob,
+  levels=c("No_Dificil", "Dificil"))
+
+best_bal_threshold<- pROC::coords(
+    svm_bal_roc,
+    x =   "best",
+    best.method ="youden",
+    ret =c("threshold", "sensitivity", "specificity", "accuracy"))
+
+best_bal_threshold
+```
+
+The optimal threshold also changes.
+```{r sec8-svm-threshold}
+best_bal_threshold<- as.numeric(best_bal_threshold["threshold"])
+
+svm_bal_pred_test <- predict(svm_balanced, newdata = test_bin_scaled_rose ,probability = TRUE)
+
+svm_bal_prob_test<- attr(svm_bal_pred_test,"probabilities")[, "Dificil"]
+
+svm_bal_pred_best<- factor(ifelse(svm_bal_prob_test>= best_bal_threshold,"Dificil", "No_Dificil"),
+                      levels =c("No_Dificil", "Dificil")
+)
+
+svm_bal_cm_best<- caret::confusionMatrix(
+    data=svm_bal_pred_best,
+    reference =test_bin_scaled_rose$DIFICIL,
+    positive  ="Dificil")
+
+plot_confusion(svm_bal_cm_best,title ="SVM -- test confusion matrix")
+```
+
+
+```{r sec8-svm-pred}
+svm_bal_metrics <- binary_metrics(svm_bal_cm_best, "SVM (balanced)")
+knitr::kable(svm_bal_metrics, digits = 3, caption = "Balanced SVM test-set metrics")
+```
+Classification is now better.
+
+
+## Simple Perceptron
+A single-perceptron artificial neural network is fitted.
+
+```{r sec8-perceptron}
+set.seed(1234)
+perceptron <- nnet::nnet(
+  DIFICIL ~ ., 
+  data = balanced_train,
+  size = 0, 
+  skip = TRUE,
+  maxit = 300, 
+  trace = FALSE, 
+  MaxNWts = 5000,
+  #entropy  =  TRUE #Since dificil is already a factor this is no needed
+)
+
+perc_pred <- factor(predict(perceptron, newdata = test_bin_scaled_rose, type = "class"),
+                    levels = c("No_Dificil", "Dificil"))
+perc_cm <- caret::confusionMatrix(perc_pred, test_bin_scaled_rose$DIFICIL,
+                                  positive = "Dificil")
+perc_metrics <- binary_metrics(perc_cm, "Perceptron (balanced)")
+knitr::kable(perc_metrics, digits = 3, caption = "Perceptron test-set metrics")
+```
+
+
+```{r}
+plot_confusion(perc_cm,title ="NN -- test confusion matrix")
+```
+
+## Comparison
+```{r sec8-comparison}
+# Include the unbalanced SVM (Section 6) as a baseline to show the effect of
+# balancing on minority-class metrics.
+balanced_comparison <- rbind(svm_metrics, svm_bal_metrics, perc_metrics)
+knitr::kable(balanced_comparison, digits = 3,
+             caption = "Binary model comparison (Recall/F1 on 'Dificil' matter most)")
+```
+The balanced SVM classifies the test sample best thanks to the corrections applied, with higher Balanced_Accuracy, Recall and F1; the unbalanced SVM remains a solid candidate. The perceptron does less well, as expected from a single neuron.
+
+
+## Prediction for `ID = 40`
+```{r sec8-predict-40}
+# Locate the dungeon with ID == 40, scale its predictors with the SAME (training)
+# scaler, and predict with both balanced models.
+obs_40 <- dungeons %>% dplyr::filter(ID == 40)
+
+if (nrow(obs_40) == 0) {
+  cat("# FLAG: no row with ID == 40 found in the data.\n")
+} else {
+  obs_40_scaled <- predict(pre_proc, obs_40[, predictor_vars])
+  
+  obs_40_scaled_svm <-obs_40_scaled
+  names(obs_40_scaled_svm) <- make.names(
+    names(train_bin_scaled_rose),
+    unique = TRUE
+  )
+  
+  
+  svm_40 <- predict(svm_balanced, newdata = obs_40_scaled_svm, probability = TRUE)
+  svm_40_prob <- attr(svm_40, "probabilities")[, "Dificil"]
+  svm_40_pred <- factor(ifelse(svm_40_prob>= best_bal_threshold,"Dificil", "No_Dificil"),levels =c("No_Dificil", "Dificil"))
+
+  perc_40 <- factor(predict(perceptron, newdata = obs_40_scaled_svm, type = "class"),
+                    levels = c("No_Dificil", "Dificil"))
+  knitr::kable(
+    data.frame(
+      Model      = c("SVM (balanced)", "Perceptron (balanced)"),
+      Prediction = c(as.character(svm_40_pred), as.character(perc_40)),
+      Actual     = as.character(obs_40$DIFICIL)
+    ),
+    caption = "Prediction for dungeon ID = 40"
+  )
+}
+```
+
+Both models mispredict, likely an atypical case. Recall that the perceptron yields a linear boundary while the SVM can bend its boundary locally via $\gamma$; even that non-linear behaviour was not enough here.
+
+
+\pagebreak
+# Reproducibility notes {.unnumbered}
+
+```{r session-info}
+# Record exact package versions so results can be reproduced later.
+sessionInfo()
+```
+
+> **Note.** This report is fully reproducible once `dungeons.csv` is placed at
+> `data/raw/dungeons.csv`. Every number, table and figure is produced by executing the
+> code; all statements marked `# FLAG:` must be filled in / confirmed against the
+> rendered output and were intentionally left un-fabricated.
+
+# Transparency and responsible declaration
+
+While completing the assignment, at least the following changes were made relative to the original code in order to fix errors, improve reproducibility and aid interpretation:
+
+- **Fix to `model_formula` generation.** The original code failed because of variable names (e.g. names starting with a digit). The formula is now built with *backticks*.
+
+- **Adaptation of some models to non-standard variable names.**
+  - For **Random Forest**, the formula interface did not accept those names correctly, so the `x_train` / `y_train` interface was used instead.
+  - For the **Genetic Algorithm**, the issue persisted, so safe names via `make.names()` were used and `nn_fitness` was updated accordingly.
+
+- **Change to the Random Forest tuning process.** The hyperparameter search was extended to include the number of trees (`ntree`) as well as `mtry`, and later analysis cells were updated accordingly.
+
+- **Improved confusion-matrix displays.** Matrices are now shown systematically as heat maps for clearer interpretation.
+
+- **Explanatory comments.** Comments were added throughout to aid interpretation and keep a clear thread across experiments.
+
+- **Document formatting.** Small formatting changes improved readability and organisation.
+
+- **Simplified neural-network configuration.** `MaxNWts = 5000` was removed as unnecessarily large for this problem size and of no experimental benefit.
+
+- **Change of GA objective.** Macro F1 is used instead, which is more suitable for an unbalanced sample.
+
+- **SVM improvements.** Confusion matrices are shown as heat maps, and a block was added to choose the best ROC-based classification threshold.
+
+- **ROSE formula fix.** The previous formula errored; it was rewritten so `ROSE::ROSE` can parse it.
+
+- **Perceptron code fix.**
+
+- **Threshold classification for the balanced SVM.**
+
+- **Comparison-section fix.** Model changes required updating this section so it runs again.
+
+- **Multiclass metrics function fix.**
